@@ -9,6 +9,7 @@
 #include <utility>
 #include <system_error>
 #include <ranges>
+#include <algorithm>
 #include <stdexec/execution.hpp>
 #include "underlying_io_uring.h"
 namespace uring_exec {
@@ -40,10 +41,11 @@ struct io_uring_exec_run {
         // Behavior details.
         bool busyloop {false};          // No yield.
         bool autoquit {false};          // `concurrent` runs infinitely by default.
-        bool realtime {false};          // No deferred processing.
+        bool realtime {false};          // (DEPRECATED) No deferred processing.
         bool waitable {false};          // Submit and wait.
         bool hookable {true};           // Always true beacause of per-object vtable.
         bool detached {false};          // Ignore stop requests from `io_uring_exec`.
+        bool progress {false};          // run() returns run_progress_info.
 
         bool transfer {false};          // For stopeed local context. Just a tricky restart.
         bool terminal {false};          // For stopped remote context. Cancel All.
@@ -59,21 +61,33 @@ struct io_uring_exec_run {
             loop_step = final_step;
             return *this;
         }
-        
-        friend
-        run_progress_info operator+=(const run_progress_info &lhs,
-                                    const run_progress_info &rhs) noexcept {
-            return {{},
-                    lhs.launched + rhs.launched,
-                    lhs.submitted + rhs.submitted,
-                    lhs.done + rhs.done};
+
+        // Vertically sum all the class members.
+        auto& operator+=(const run_progress_info &rhs) noexcept {
+            // Don't worry about the codegen performance,
+            // it is as efficient as manually summing each member by name.
+            auto &lhs = *this;
+            using strict_alias = std::array<size_t, 4>;
+            auto l = std::bit_cast<strict_alias>(lhs);
+            auto r = std::bit_cast<strict_alias>(rhs);
+            std::ranges::transform(l, r, begin(l), std::plus());
+            return lhs = std::bit_cast<run_progress_info>(l);
         }
     };
 
+    // Tell the compiler we're not using the return value.
+    struct run_progress_no_info {
+        decltype(std::ignore) _1, _2, _3, _4;
+        void operator()(...) const noexcept {}
+        auto operator+=(const auto &) const noexcept {}
+    };
+
+    // run_policy:       See the comments above.
+    // any_stop_token_t: Compatible with `std::jthread` and `std::stop_token` for a unified interface.
+    // Return type:      Either `run_progress_info` or `void`, depending on `run_policy.progress`.
     template <run_policy policy = {},
-              // Compatible with std::jthread and std::stop_token.
               typename any_stop_token_t = stdexec::never_stop_token>
-    run_progress_info run(any_stop_token_t external_stop_token = {}) {
+    auto run(any_stop_token_t external_stop_token = {}) {
         constexpr auto sum_options = [](auto ...options) {
             return (int{options} + ...);
         };
@@ -91,10 +105,16 @@ struct io_uring_exec_run {
         auto &remote = that()->get_remote();
         auto &local = that()->get_local();
 
-        // Progress.
-        run_progress_info progress_info;
-        run_progress_info one_step_progress_info;
-        auto &&[_, launched, submitted, done] = one_step_progress_info;
+        // Progress, and the return value of run().
+        auto progress_info = [] {
+            if constexpr (policy.progress) {
+                return run_progress_info();
+            } else {
+                return run_progress_no_info();
+            }
+        } ();
+        auto progress_info_one_step = run_progress_info();
+        auto &&[_, launched, submitted, done] = progress_info_one_step;
 
         // We don't need this legacy way.
         // It was originally designed to work with a single std::stop_token type,
@@ -185,8 +205,8 @@ struct io_uring_exec_run {
                 any_progress |= bool(launched);
                 any_progress |= bool(submitted);
                 any_progress |= bool(done);
-                progress_info += one_step_progress_info;
-                one_step_progress_info = {};
+                progress_info += progress_info_one_step;
+                progress_info_one_step = {};
             }
 
             if constexpr (policy.weakly_concurrent) {
