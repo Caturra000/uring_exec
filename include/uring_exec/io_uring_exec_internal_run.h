@@ -96,8 +96,26 @@ struct io_uring_exec_run {
         run_progress_info one_step_progress_info;
         auto &&[_, launched, submitted, done] = one_step_progress_info;
 
-        // return `step` as a performance hint.
-        for(auto step : std::views::iota(0)) {
+        // We don't need this legacy way.
+        // It was originally designed to work with a single std::stop_token type,
+        // and thus requires a runtime check for a unified (non-void, but won't stop) interface.
+        //
+        // Instead, use `stdexec::never_stop_token` for a more constexpr-friendly way.
+        // We can infer the compile-time information from its type.
+        //
+        // If a type other than never_stop_token is passed to this function,
+        // we assume that it must be `stop_possible() == true`.
+        // This allow us to check stop_requested directly,
+        // and reduce at least one trivial operation.
+        //
+        // auto legacy_stop_requested =
+        //     [&, possible = external_stop_token.stop_possible()] {
+        //         if(!possible) return false;
+        //         return external_stop_token.stop_requested();
+        //     };
+
+        // Return `step` as a performance hint.
+        for(auto step : std::views::iota(1 /* 0 means no-op. */)) {
             if constexpr (policy.launch && not policy.transfer) {
                 auto &q = remote._immediate_queue;
                 auto op = q.move_all();
@@ -188,6 +206,7 @@ struct io_uring_exec_run {
             // This might be useful for some network I/O patterns.
             if constexpr (not policy.detached) {
                 if(remote.stop_requested()) {
+                    // TODO: Eager cancel.
                     return progress_info(step);
                 }
             }
@@ -271,7 +290,6 @@ private:
         auto sqe = io_uring_get_sqe(&uring);
         io_uring_sqe_set_data(sqe, make_destructive_command());
         io_uring_prep_cancel(sqe, {}, IORING_ASYNC_CANCEL_ANY);
-
     }
 };
 
