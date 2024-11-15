@@ -10,6 +10,8 @@
 #include <bit>
 #include <array>
 #include <atomic>
+namespace uring_exec {
+inline namespace utils {
 
 // C-style check for syscall.
 // inline void check(int cond, const char *reason) {
@@ -52,9 +54,12 @@ nofail(...) -> nofail<std::less<int>, 0, true>;
 // Go-style, move-safe defer.
 [[nodiscard("defer() is not allowed to be temporary.")]]
 inline auto defer(auto func) {
-    // Make STL happy.
-    auto dummy = reinterpret_cast<void*>(0x1);
-    return std::unique_ptr<void, decltype(func)>{dummy, std::move(func)};
+    auto _0x1 = std::uintptr_t {0x1};
+    // reinterpret_cast is not a constexpr.
+    auto make_STL_happy = reinterpret_cast<void*>(_0x1);
+    auto make_dtor_happy = [f = std::move(func)](...) { f(); };
+    using Defer = std::unique_ptr<void, decltype(make_dtor_happy)>;
+    return Defer{make_STL_happy, std::move(make_dtor_happy)};
 }
 
 // For make_server().
@@ -90,3 +95,6 @@ inline int make_server(make_server_option_t option) {
 
     return socket_fd;
 }
+
+} // namespace utils
+} // namespace uring_exec

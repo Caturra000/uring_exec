@@ -4,6 +4,8 @@
 #include <ranges>
 #include "uring_exec.hpp"
 
+using uring_exec::io_uring_exec;
+
 int main() {
     constexpr auto test_file_name = "/tmp/jojo";
     int fd = (::unlink(test_file_name), ::open(test_file_name, O_RDWR|O_TRUNC|O_CREAT, 0666));
@@ -33,9 +35,9 @@ int main() {
         })
       | stdexec::let_value([scheduler, fd](auto &&buf) {
             return
-                async_write(scheduler, fd, buf.data(), buf.size() - 1)
+                uring_exec::async_write(scheduler, fd, buf.data(), buf.size() - 1)
               | stdexec::let_value([&](auto written_bytes) {
-                    return async_read(scheduler, fd, buf.data(), written_bytes);
+                    return uring_exec::async_read(scheduler, fd, buf.data(), written_bytes);
                 })
               | stdexec::then([&buf](auto read_bytes) {
                     auto iter = std::ostream_iterator<char>{std::cout};

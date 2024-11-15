@@ -5,6 +5,8 @@
 #include <numeric>
 #include "uring_exec.hpp"
 
+using uring_exec::io_uring_exec;
+
 int main() {
     io_uring_exec uring({.uring_entries=512});
     stdexec::scheduler auto scheduler = uring.get_scheduler();
@@ -30,7 +32,12 @@ int main() {
         for(auto i : user_frequency) {
             stdexec::sender auto s =
                 stdexec::schedule(scheduler)
-              | stdexec::then([&, i] { user_request(i); });
+              | stdexec::then([&, i] { user_request(i); })
+              | stdexec::let_value([scheduler] {
+                    return
+                        uring_exec::async_nop(scheduler)
+                      | stdexec::then([](...){});
+                });
             scope.spawn(std::move(s));
         }
     };

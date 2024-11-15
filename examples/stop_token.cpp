@@ -1,6 +1,8 @@
 #include <iostream>
 #include "uring_exec.hpp"
 
+using uring_exec::io_uring_exec;
+
 int main() {
     // Default behavior: Infinite run().
     // {

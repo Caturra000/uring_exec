@@ -11,12 +11,13 @@
 #include <stdexec/execution.hpp>
 #include "io_uring_exec.h"
 #include "io_uring_exec_operation.h"
+namespace uring_exec {
 
 template <auto io_uring_prep_invocable, typename ...Args>
 struct io_uring_exec_sender {
     using sender_concept = stdexec::sender_t;
     using completion_signatures = stdexec::completion_signatures<
-                                    stdexec::set_value_t(io_uring_exec_operation_base::result_t),
+                                    stdexec::set_value_t(io_uring_exec::operation_base::result_t),
                                     stdexec::set_error_t(std::exception_ptr),
                                     stdexec::set_stopped_t()>;
 
@@ -32,7 +33,7 @@ struct io_uring_exec_sender {
 
 template <auto io_uring_prep_invocable, typename ...Args>
 inline stdexec::sender_of<
-    stdexec::set_value_t(io_uring_exec_operation_base::result_t /* cqe->res */),
+    stdexec::set_value_t(io_uring_exec::operation_base::result_t /* cqe->res */),
     stdexec::set_error_t(std::exception_ptr)>
 auto make_uring_sender(std::in_place_t,
                        io_uring_exec::scheduler s, std::tuple<Args...> &&t_args) noexcept {
@@ -96,3 +97,5 @@ inline stdexec::sender
 auto async_nop(io_uring_exec::scheduler s, ...) noexcept {
     return make_uring_sender<io_uring_prep_nop>(s);
 }
+
+} // namespace uring_exec
