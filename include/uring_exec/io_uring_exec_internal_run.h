@@ -113,8 +113,12 @@ struct io_uring_exec_run {
                 return run_progress_no_info();
             }
         } ();
+
+        if(_runloop_must_have_stopped) return progress_info(0);
+
         auto progress_info_one_step = run_progress_info();
         auto &&[_, launched, submitted, done] = progress_info_one_step;
+
 
         // We don't need this legacy way.
         // It was originally designed to work with a single std::stop_token type,
@@ -226,7 +230,10 @@ struct io_uring_exec_run {
             // This might be useful for some network I/O patterns.
             if constexpr (not policy.detached) {
                 if(remote.stop_requested()) {
-                    // TODO: Eager cancel.
+                    // A weakly_parallel work. Won't check the request recursively.
+                    inplace_terminal_run(local);
+                    // This local runloop is not allowed to run again.
+                    _runloop_must_have_stopped = true;
                     return progress_info(step);
                 }
             }
@@ -248,7 +255,7 @@ struct io_uring_exec_run {
 
     void transfer_run() {
         auto &local = that()->get_local();
-        prepare_cancellation(local);
+        submit_destructive_command(local);
         constexpr auto policy = [] {
             auto policy = run_policy{};
             policy.concurrent = false;
@@ -269,7 +276,11 @@ struct io_uring_exec_run {
         while(remote._running_local.load(std::memory_order::acquire) > 1) {
             std::this_thread::yield();
         }
-        prepare_cancellation(main_local);
+        inplace_terminal_run(main_local);
+    }
+
+    void inplace_terminal_run(auto &local) {
+        submit_destructive_command(local);
         constexpr auto policy = [] {
             auto policy = run_policy{};
             policy.concurrent = false;
@@ -281,6 +292,8 @@ struct io_uring_exec_run {
     }
 
 private:
+    // Avoid atomic stop_requested() operation.
+    bool _runloop_must_have_stopped {false};
 
     constexpr auto that() noexcept -> Exec_crtp_derived* {
         return static_cast<Exec_crtp_derived*>(this);
@@ -304,12 +317,13 @@ private:
         return make_destructive_command() == user_data;
     }
 
-    void prepare_cancellation(underlying_io_uring &uring) {
+    void submit_destructive_command(underlying_io_uring &uring) noexcept {
         // Flush, and ensure that the cancel-sqe must be allocated successfully.
         io_uring_submit(&uring);
         auto sqe = io_uring_get_sqe(&uring);
         io_uring_sqe_set_data(sqe, make_destructive_command());
         io_uring_prep_cancel(sqe, {}, IORING_ASYNC_CANCEL_ANY);
+        io_uring_submit(&uring);
     }
 };
 
