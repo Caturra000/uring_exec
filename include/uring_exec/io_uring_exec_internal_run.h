@@ -51,13 +51,20 @@ struct io_uring_exec_run {
         bool terminal {false};          // For stopped remote context. Cancel All.
     };
 
+    // Tell the compiler we're not using the return value.
+    struct run_progress_no_info {
+        decltype(std::ignore) _1, _2, _3, _4;
+        void operator()(...) const noexcept {}
+        void operator+=(const auto &) const noexcept {}
+    };
+
     struct run_progress_info {
         size_t loop_step {};
         size_t launched {};             // For intrusive task queue.
         size_t submitted {};            // For `io_uring_submit`.
         size_t done {};                 // For `io_uring_for_each_cqe`.
 
-        run_progress_info operator()(size_t final_step) noexcept {
+        auto operator()(size_t final_step) noexcept {
             loop_step = final_step;
             return *this;
         }
@@ -73,13 +80,15 @@ struct io_uring_exec_run {
             std::ranges::transform(l, r, begin(l), std::plus());
             return lhs = std::bit_cast<run_progress_info>(l);
         }
-    };
 
-    // Tell the compiler we're not using the return value.
-    struct run_progress_no_info {
-        decltype(std::ignore) _1, _2, _3, _4;
-        void operator()(...) const noexcept {}
-        auto operator+=(const auto &) const noexcept {}
+        template <bool really_need>
+        inline constexpr static auto make() {
+            if constexpr (really_need) {
+                return run_progress_info();
+            } else {
+                return run_progress_no_info();
+            }
+        }
     };
 
     // run_policy:       See the comments above.
@@ -99,26 +108,21 @@ struct io_uring_exec_run {
             "Small. Fast. Reliable. Choose any three."
         );
 
+        // Progress, and the return value of run().
+
         constexpr bool any_progress_possible =
             sum_options(policy.launch, policy.submit, policy.iodone);
 
-        auto &remote = that()->get_remote();
-        auto &local = that()->get_local();
-
-        // Progress, and the return value of run().
-        auto progress_info = [] {
-            if constexpr (policy.progress) {
-                return run_progress_info();
-            } else {
-                return run_progress_no_info();
-            }
-        } ();
-
-        if(_runloop_must_have_stopped) return progress_info(0);
-
-        auto progress_info_one_step = run_progress_info();
+        auto progress_info          = run_progress_info::template make<policy.progress>();
+        auto progress_info_one_step = run_progress_info::template make<any_progress_possible>();
         auto &&[_, launched, submitted, done] = progress_info_one_step;
 
+        if(_runloop_must_have_stopped) [[unlikely]] {
+            return progress_info(0);
+        }
+
+        auto &remote = that()->get_remote();
+        auto &local = that()->get_local();
 
         // We don't need this legacy way.
         // It was originally designed to work with a single std::stop_token type,
