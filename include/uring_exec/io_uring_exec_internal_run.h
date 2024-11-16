@@ -46,9 +46,13 @@ struct io_uring_exec_run {
         bool hookable {true};           // Always true beacause of per-object vtable.
         bool detached {false};          // Ignore stop requests from `io_uring_exec`.
         bool progress {false};          // run() returns run_progress_info.
+        bool no_delay {false};          // Complete I/O as fast as possible.
 
         bool transfer {false};          // For stopeed local context. Just a tricky restart.
         bool terminal {false};          // For stopped remote context. Cancel All.
+
+        size_t iodone_batch {64};       // (Roughly estimated value) for `io_uring_peek_batch_cqe`.
+        size_t iodone_maxnr {512};      // Maximum number of `cqe`s that can be taken in one step.
     };
 
     // Tell the compiler we're not using the return value.
@@ -62,7 +66,7 @@ struct io_uring_exec_run {
         size_t loop_step {};
         size_t launched {};             // For intrusive task queue.
         size_t submitted {};            // For `io_uring_submit`.
-        size_t done {};                 // For `io_uring_for_each_cqe`.
+        size_t done {};                 // For `io_uring_peek_batch_cqe`.
 
         auto operator()(size_t final_step) noexcept {
             loop_step = final_step;
@@ -178,29 +182,48 @@ struct io_uring_exec_run {
             }
 
             if constexpr (policy.iodone) {
-                io_uring_cqe *cqe;
-
-                // TODO: use batch peek.
-                while(!io_uring_peek_cqe(&local, &cqe)) {
+                std::array<io_uring_cqe*, policy.iodone_batch> cqes;
+                auto produce_some = [&] {
+                    return io_uring_peek_batch_cqe(
+                            &local, cqes.data(), cqes.size());
+                };
+                auto consume_one = [&](io_uring_cqe* cqe) {
                     auto user_data = io_uring_cqe_get_data(cqe);
                     if constexpr (policy.terminal || policy.transfer) {
                         if(test_destructive_command(user_data)) {
-                            io_uring_cqe_seen(&local, cqe);
-                            continue;
+                            return;
                         }
                     }
-
                     using uop = io_uring_exec_operation_base;
                     auto uring_op = std::bit_cast<uop*>(user_data);
-                    auto cqe_res = cqe->res;
-                    io_uring_cqe_seen(&local, cqe);
-                    done++;
-                    local._inflight--;
                     if constexpr (policy.transfer) {
                         uring_op->vtab.restart(uring_op);
                     } else {
-                        uring_op->vtab.complete(uring_op, cqe_res);
+                        uring_op->vtab.complete(uring_op, cqe->res);
                     }
+                };
+                auto consume_some = [&](std::ranges::view auto some_view) {
+                    for(auto one : some_view) consume_one(one);
+                };
+                auto greedy = [&](auto some) {
+                    // Shut up and take all!
+                    if constexpr (policy.transfer || policy.terminal) return false;
+                    // Take too many cqes in this step.
+                    // Retry in the next step to prevent .launch/.submit starvation.
+                    if(done > policy.iodone_maxnr) return true;
+                    // Not full. There may be short I/Os.
+                    // It can take more, but not much benefit.
+                    // NOTE: It is not recommended to move this line up.
+                    //       Since our intrusive queues are FILO design.
+                    if(some != cqes.size()) return not policy.no_delay;
+                    return false;
+                };
+                for(unsigned some; (some = produce_some()) > 0;) {
+                    consume_some(cqes | std::views::take(some));
+                    io_uring_cq_advance(&local, some);
+                    done += some;
+                    local._inflight -= some;
+                    if(greedy(some)) break;
                 }
             }
 
