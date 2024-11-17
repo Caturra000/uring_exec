@@ -1,0 +1,66 @@
+#include <iostream>
+#include <exception>
+#include <thread>
+#include <string>
+#include <vector>
+#include <tuple>
+#include <format>
+#include <asio.hpp>
+
+using asio::ip::tcp;
+constexpr auto use_nothrow_awaitable
+    = asio::as_tuple(asio::use_awaitable);
+
+asio::awaitable<void> pong(asio::ip::tcp::socket client, int block_size) {
+    std::string content(block_size, 'x');
+    for(;;) {
+        auto [e, n] = co_await asio::async_read(client, asio::buffer(content), use_nothrow_awaitable);
+        if(e) break;
+
+        std::tie(e, n) = co_await asio::async_write(client, asio::buffer(content), use_nothrow_awaitable);
+        if(e) break;
+    }
+}
+
+asio::awaitable<void> server(auto &acceptor, int block_size, int session_count) {
+    auto executor = acceptor.get_executor();
+    for(int i = 0; i < session_count; ++i) {
+        auto [e, client] = co_await acceptor.async_accept(use_nothrow_awaitable);
+        if(e) break;
+        asio::co_spawn(
+            executor,
+            [=, client = std::move(client)]() mutable -> asio::awaitable<void> {
+                co_await pong(std::move(client), block_size);
+            } (),
+            asio::detached);
+    }
+}
+
+// Enable io_uring: -DASIO_HAS_IO_URING -DASIO_DISABLE_EPOLL
+int main(int argc, char *argv[]) {
+    if(argc <= 4) {
+        auto message = std::format(
+            "usage: {} <port> <threads> <blocksize> <sessions> <timeout>", argv[0]);
+        std::cerr << message << std::endl;
+        return -1;
+    }
+    auto atoies = [&](auto ...idxes) { return std::tuple{atoi(argv[idxes])...}; };
+
+    auto [port, thread_count, block_size, session_count] = atoies(1, 2, 3, 4);
+
+    asio::io_context ioc;
+
+    tcp::acceptor acceptor(ioc, {tcp::v4(), static_cast<asio::ip::port_type>(port)});
+
+    asio::co_spawn(
+        ioc,
+        server(acceptor, block_size, session_count),
+        asio::detached);
+
+    {
+        std::vector<std::jthread> threads(thread_count);
+        for(auto &&j : threads) j = std::jthread([&] { ioc.run(); });
+    }
+
+    std::cout << "done." << std::endl;
+}

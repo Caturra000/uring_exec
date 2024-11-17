@@ -1,5 +1,6 @@
 #include <unistd.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <iostream>
 #include <ranges>
 #include <format>
@@ -8,7 +9,7 @@
 #include "uring_exec.hpp"
 
 using uring_exec::io_uring_exec;
-constexpr auto no_op = [](...) {};
+constexpr auto noop = [](...) {};
 
 stdexec::sender
 auto pong(io_uring_exec::scheduler scheduler, int client_fd, int blocksize) {
@@ -25,12 +26,12 @@ auto pong(io_uring_exec::scheduler scheduler, int client_fd, int blocksize) {
                 })
               | exec::repeat_effect_until();
         })
+      | stdexec::upon_error(noop)
       | stdexec::let_value([=] {
             return
-                uring_exec::async_close(scheduler, client_fd)
-              | stdexec::then(no_op);
+                uring_exec::async_close(scheduler, client_fd);
         })
-      | stdexec::upon_error(no_op);
+      | stdexec::then(noop);
 }
 
 stdexec::sender
@@ -46,7 +47,7 @@ auto server(io_uring_exec::scheduler scheduler, exec::async_scope &scope,
                 })
               | exec::repeat_n(sessions);
         })
-      | stdexec::upon_error(no_op);
+      | stdexec::upon_error(noop);
 }
 
 int main(int argc, char *argv[]) {
@@ -59,6 +60,9 @@ int main(int argc, char *argv[]) {
     auto atoies = [&](auto ...idxes) { return std::tuple{atoi(argv[idxes])...}; };
     auto [port, threads, blocksize, sessions] = atoies(1, 2, 3, 4);
 
+    struct sigaction sa {};
+    sa.sa_handler = SIG_IGN;
+    sigaction(SIGPIPE, &sa, nullptr);
     auto server_fd = uring_exec::make_server({.port=port});
     io_uring_exec uring({.uring_entries=512});
     exec::async_scope scope;

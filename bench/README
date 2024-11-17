@@ -1,0 +1,21 @@
+!!!WORK IN PROGRESS!!!
+!!!WORK IN PROGRESS!!!
+!!!WORK IN PROGRESS!!!
+
+GCC works. But Clang has some problems. ¯\_(ツ)_/¯
+
+========== ping-pong ==========
+
+`ping` is a client.
+`pong` is a server.
+
+Usage:
+pong <port> <threads> <blocksize> <sessions>
+ping <port> <threads> <blocksize> <sessions> <timeout(s)>
+
+Example:
+./build/pong 8848 5 16384 50
+./build/ping 8848 5 16384 50 5
+
+Note:
+`pong_asio` is also a server but it uses Asio. You can use it to compare performance.
