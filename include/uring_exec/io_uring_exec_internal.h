@@ -211,7 +211,7 @@ struct io_uring_exec::scheduler {
         io_uring_exec *uring;
     };
     bool operator<=>(const scheduler &) const=default;
-    sender schedule() noexcept { return {uring}; }
+    sender schedule() const noexcept { return {uring}; }
     io_uring_exec *uring;
 };
 
