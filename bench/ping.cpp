@@ -11,7 +11,7 @@
 #include "uring_exec.hpp"
 
 using uring_exec::io_uring_exec;
-constexpr auto noop = [](...) {};
+constexpr auto noop = [](auto &&...) {};
 
 auto my_async_socket(io_uring_exec::scheduler s, auto ...args) {
     return uring_exec::make_uring_sender<io_uring_prep_socket>(s, args...);
@@ -69,7 +69,7 @@ auto client(io_uring_exec::scheduler scheduler,
         })
       | stdexec::let_value([=, addr = make_addr(endpoint)](int client_fd) {
             return my_async_connect(scheduler, client_fd, &addr, sizeof addr)
-                 | stdexec::then([=](...) { return client_fd; });
+                 | stdexec::then([=](auto&&) { return client_fd; });
         })
       | stdexec::let_value([=, &r, &w](int client_fd) {
             return ping(scheduler, client_fd, blocksize, stop_token)
@@ -120,7 +120,7 @@ int main(int argc, char *argv[]) {
       | stdexec::let_value([=] {
             return uring_exec::async_wait(scheduler, std::chrono::seconds(timeout));
         })
-      | stdexec::then([&](...) { iss.request_stop(); });
+      | stdexec::then([&](auto&&) { iss.request_stop(); });
     scope.spawn(std::move(deadline));
 
     for(auto n = sessions; n--;) {
@@ -129,7 +129,7 @@ int main(int argc, char *argv[]) {
           | stdexec::let_value([=, &r, &w, &iss] {
                 return client(scheduler, endpoint, blocksize, r, w, iss.get_token());
             })
-          | stdexec::then([](...){});
+          | stdexec::then(noop);
         scope.spawn(s);
     }
 

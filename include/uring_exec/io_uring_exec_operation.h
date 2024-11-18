@@ -78,14 +78,9 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
             } else if(cqe_res == -ECANCELED) {
                 stdexec::set_stopped(std::move(self->receiver));
             } else {
-            #ifdef __clang__
-                // FIXME: set_error() generates ud2 instructions. wtf?
-                stdexec::set_stopped(std::move(self->receiver));
-            #else
                 auto error = std::make_exception_ptr(
                             std::system_error(-cqe_res, std::system_category()));
                 stdexec::set_error(std::move(self->receiver), std::move(error));
-            #endif
             }
         }},
 

@@ -9,7 +9,7 @@
 #include "uring_exec.hpp"
 
 using uring_exec::io_uring_exec;
-constexpr auto noop = [](...) {};
+constexpr auto noop = [](auto &&...) {};
 
 stdexec::sender
 auto pong(io_uring_exec::scheduler scheduler, int client_fd, int blocksize) {
