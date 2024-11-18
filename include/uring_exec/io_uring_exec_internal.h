@@ -77,13 +77,17 @@ struct io_uring_exec_local: public underlying_io_uring,
 
 ////////////////////////////////////////////////////////////////////// control block
 
-struct io_uring_exec: public underlying_io_uring, // TODO: No need to use a backup uring.
+struct io_uring_exec: public underlying_io_uring, // For IORING_SETUP_ATTACH_WQ.
                       public io_uring_exec_run<io_uring_exec, io_uring_exec_operation_base>,
                       private detail::unified_stop_source<stdexec::inplace_stop_source>
 {
     // Example: io_uring_exec uring({.uring_entries=512});
     io_uring_exec(underlying_io_uring::constructor_parameters params) noexcept
-        : underlying_io_uring(params), _uring_params(params) {}
+        : underlying_io_uring(params), _uring_params(params)
+    {
+        // Then it will broadcast to thread-local urings.
+        params.ring_fd = this->ring_fd;
+    }
 
     io_uring_exec(unsigned uring_entries, int uring_flags = 0) noexcept
         : io_uring_exec({.uring_entries = uring_entries, .uring_flags = uring_flags}) {}
