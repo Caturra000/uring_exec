@@ -148,28 +148,40 @@ struct io_uring_exec_run {
 
         // Return `step` as a performance hint.
         for(auto step : std::views::iota(1 /* 0 means no-op. */)) {
-            if constexpr (policy.launch && not policy.transfer) {
-                auto &q = remote._immediate_queue;
-                auto op = q.move_all();
-                // NOTE:
-                // We need to get the `next(op)` first.
-                // Because `op` will be destroyed after complete/cancel().
-                auto safe_for_each = [&q, op](auto &&f) mutable {
-                    // It won't modify the outer `op`.
-                    // If we need any later operation on it.
-                    for(; op; f(std::exchange(op, q.next(op))));
+            if constexpr (policy.launch) {
+                // TODO: Lockfree wrapper for auto std::move(q) -> op*.
+                auto launch = [&launched](auto &intrisive_queue) {
+                    auto &q = intrisive_queue;
+                    auto op = q.move_all();
+                    // NOTE:
+                    // We need to get the `next(op)` first.
+                    // Because `op` will be destroyed after complete/cancel().
+                    auto safe_for_each = [&q, op](auto &&f) mutable {
+                        // It won't modify the outer `op`.
+                        // If we need any later operation on it.
+                        for(; op; f(std::exchange(op, q.next(op))));
+                    };
+                    safe_for_each([&launched](auto op) {
+                        if constexpr (policy.terminal) {
+                            op->vtab.cancel(op);
+                            // Make Clang happy.
+                            (void)launched;
+                        } else {
+                            op->vtab.complete(op);
+                            launched++;
+                        }
+                    });
+                    // TODO: record the first task (op).
+                    // Used to detect whether it is on-stack or on-heap
+                    // as a performance hint.
                 };
-                safe_for_each([&launched](auto op) {
-                    if constexpr (policy.terminal) {
-                        op->vtab.cancel(op);
-                        // Make Clang happy.
-                        (void)launched;
-                    } else {
-                        op->vtab.complete(op);
-                        launched++;
-                    }
-                });
-                // TODO: record the first task (op).
+                // No need to pull remote tasks.
+                if constexpr (policy.transfer) {
+                    launch(local._attached_queue);
+                } else {
+                    launch(local._attached_queue);
+                    launch(remote._immediate_queue);
+                }
             }
 
             if constexpr (policy.submit) {

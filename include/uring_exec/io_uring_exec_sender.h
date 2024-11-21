@@ -37,7 +37,7 @@ inline stdexec::sender_of<
     stdexec::set_error_t(std::exception_ptr)>
 auto make_uring_sender(std::in_place_t,
                        io_uring_exec::scheduler s, std::tuple<Args...> &&t_args) noexcept {
-    return io_uring_exec_sender<io_uring_prep_invocable, Args...>{s.uring, std::move(t_args)};
+    return io_uring_exec_sender<io_uring_prep_invocable, Args...>{s.context, std::move(t_args)};
 }
 
 // A sender factory.
@@ -73,7 +73,7 @@ auto async_accept(io_uring_exec::scheduler s,int fd, int flags) noexcept {
 }
 
 inline stdexec::sender
-auto async_wait(io_uring_exec::scheduler s, std::chrono::milliseconds duration) noexcept {
+auto async_wait(io_uring_exec::scheduler s, std::chrono::steady_clock::duration duration) noexcept {
     using namespace std::chrono;
     auto duration_s = duration_cast<seconds>(duration);
     auto duration_ns = duration_cast<nanoseconds>(duration - duration_s);
@@ -91,7 +91,7 @@ auto async_wait(io_uring_exec::scheduler s, std::chrono::milliseconds duration) 
         });
 }
 
-// Debug only.
+// Debug only. (For example, to verify the correctness of concurrency.)
 // The return value makes no sense at all.
 inline stdexec::sender
 auto async_nop(io_uring_exec::scheduler s, ...) noexcept {
