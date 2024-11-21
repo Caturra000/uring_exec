@@ -1,0 +1,46 @@
+!!!WORK IN PROGRESS!!!
+!!!WORK IN PROGRESS!!!
+!!!WORK IN PROGRESS!!!
+
+GCC works. <del> But Clang has some problems. ¯\_(ツ)_/¯ </del>
+Clang works!
+
+========== ping-pong ==========
+
+`ping` is a client.
+`pong` is a server.
+
+Usage:
+pong <port> <threads> <blocksize> <sessions>
+ping <port> <threads> <blocksize> <sessions> <timeout(s)>
+
+Example:
+./build/pong 8848 5 16384 50
+./build/ping 8848 5 16384 50 5
+
+Note:
+`pong_asio` is also a server but it uses Asio. You can use it to compare performance.
+For a fair comparison, make sure to enable the `-DASIO_HAS_IO_URING` and `-DASIO_DISABLE_EPOLL` macros.
+(`epoll` is toooo fast! For the current kernel implementation, `io_uring` can't beat it.)
+
+Here is my benchmark report on:
+* {Linux v6.4.8}
+* {AMD 5800H, 16 GB}
+* {uring_exec cc97f50, asio 62481a2}
+* {gcc v13.2.0 -O3}
+
+blocksize       = 16384
+timeout         = 5s
+throughput unit = GiB/s
+
+| threads / sessions | asio (io_uring) | uring_exec |
+| ------------------ | --------------- | ---------- |
+| 2 / 10             | 1.868           | 2.918      |
+| 2 / 100            | 2.744           | 3.684      |
+| 2 / 1000           | 1.382           | 2.301      |
+| 4 / 10             | 1.771           | 2.960      |
+| 4 / 100            | 2.694           | 3.390      |
+| 4 / 1000           | 1.275           | 3.796      |
+| 8 / 10             | 0.978           | 2.579      |
+| 8 / 100            | 2.107           | 2.823      |
+| 8 / 1000           | 1.177           | 2.883      |
