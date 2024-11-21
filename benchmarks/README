@@ -17,11 +17,14 @@ ping <port> <threads> <blocksize> <sessions> <timeout(s)>
 Example:
 ./build/pong 8848 5 16384 50
 ./build/ping 8848 5 16384 50 5
+(or use `make benchmark_script`, or `xmake build benchmarks && xmake run benchmarks`.)
+All commands should be run from the root directory.
 
 Note:
 `pong_asio` is also a server but it uses Asio. You can use it to compare performance.
 For a fair comparison, make sure to enable the `-DASIO_HAS_IO_URING` and `-DASIO_DISABLE_EPOLL` macros.
 (`epoll` is toooo fast! For the current kernel implementation, `io_uring` can't beat it.)
+Use `xmake run benchmarks --server asio` to benchmark.
 
 Here is my benchmark report on:
 * {Linux v6.4.8}

@@ -2,20 +2,27 @@
 
 INCLUDE = include
 EXAMPLES = examples
-BENCH = bench
+BENCH = benchmarks
 BUILD = build
 
+# Will not compile.
+NEED_EXTERNAL_DEPENDENCY = $(BENCH)/pong_asio.cpp
+
+# NEED_EXTERNAL_DEPENDENCY is not included.
 ALL_EXAMPLES_TARGETS = $(notdir $(basename $(wildcard $(EXAMPLES)/*.cpp)))
-ALL_BENCH_TARGETS = $(notdir $(basename $(wildcard $(BENCH)/*.cpp)))
+ALL_BENCH_TARGETS = $(notdir $(basename $(filter-out $(NEED_EXTERNAL_DEPENDENCY), $(wildcard $(BENCH)/*.cpp))))
 
 CXX_FLAGS = -std=c++20 -Wall -Wextra -g -I$(INCLUDE) $^ -luring -pthread
 CXX_FLAGS_DEBUG =
 
-all: examples bench
+all: examples benchmarks
 
 examples: $(ALL_EXAMPLES_TARGETS)
 
-bench: $(ALL_BENCH_TARGETS)
+benchmarks: $(ALL_BENCH_TARGETS)
+
+benchmark_script: benchmarks
+	python $(BENCH)/pingpong.py
 
 clean:
 	@rm -rf $(BUILD)

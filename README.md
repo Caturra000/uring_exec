@@ -28,9 +28,9 @@ auto echo(io_uring_exec::scheduler scheduler, int client_fd) {
                 })
               | stdexec::let_value([=, &buf](int written_bytes) {
                     return stdexec::just(written_bytes == 0 || buf[0] == '@');
-                });
+                })
+              | exec::repeat_effect_until();
         })
-      | exec::repeat_effect_until()
       | stdexec::let_value([=] {
             std::cout << "Closing client..." << std::endl;
             return uring_exec::async_close(scheduler, client_fd) | stdexec::then([](...){});
@@ -72,14 +72,27 @@ For more usage examples, refer to the `examples` directory.
 
 ## Build
 
-This is a header-only project, but you can run `make all` to build all the examples, or `make <example_name>`.
+This is a C++20 header-only library; simply include it in your project.
 
-Before running `make`, ensure that:
+If you want to try some examples or benchmark tests, use `xmake`:
+* `xmake build examples`, then `xmake run <example_name>`. (For example, `xmake run hello_coro`.)
+* `xmake build benchmarks && xmake run benchmarks`.
 
-+ Both `stdexec` and `liburing` are available locally.
-+ The C++ compiler supports the `-std=c++20` standard.
+`make` is also supported, but you should ensure that:
+* Both `stdexec` and `liburing` are available locally.
+* `asio` is optional.
+
+Then you can:
+* `make all`: build all examples and benchmarks.
+* `make <example_name>`: build a specified example file.
+* `make <benchmark_name>`: build a specified benchmark file.
+* `make benchmark_script`: run the ping-pong test.
 
 It is recommended to use at least Linux kernel version 6.1.
+
+## Benchmark
+
+See `/benchmarks` for benchmark report.
 
 ## Notes
 
