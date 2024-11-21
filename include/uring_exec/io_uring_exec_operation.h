@@ -17,7 +17,7 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
           uring_control(uring_control),
           args(std::move(args)) {}
 
-    void start() noexcept {
+    void start() noexcept try {
         // NOTE: Don't store the thread_local value to a class member.
         // It might be transferred to a different thread.
         // See restart()/exec_run::transfer_run() for more details.
@@ -37,6 +37,9 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
             // TODO: We might need some customization points for minor operations (cancel).
             async_restart();
         }
+    } catch(...) {
+        // exec::scope.spawn() is throwable.
+        stdexec::set_error(std::move(receiver), std::current_exception());
     }
 
     // Since operations are stable (until stdexec::set_xxx(receiver)),
@@ -55,6 +58,7 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
     inline constexpr static vtable this_vtable {
         {.complete = [](auto *_self, result_t cqe_res) noexcept {
             auto self = static_cast<io_uring_exec_operation*>(_self);
+            auto &receiver = self->receiver;
 
             constexpr auto is_timer = [] {
                 // Make GCC happy.
@@ -68,19 +72,19 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
                 auto good = [cqe_res](auto ...errors) { return ((cqe_res == errors) || ...); };
                 // Timed out is not an error.
                 if(good(-ETIME, -ETIMEDOUT)) [[likely]] {
-                    stdexec::set_value(std::move(self->receiver), cqe_res);
+                    stdexec::set_value(std::move(receiver), cqe_res);
                     return;
                 }
             }
 
             if(cqe_res >= 0) [[likely]] {
-                stdexec::set_value(std::move(self->receiver), cqe_res);
+                stdexec::set_value(std::move(receiver), cqe_res);
             } else if(cqe_res == -ECANCELED) {
-                stdexec::set_stopped(std::move(self->receiver));
+                stdexec::set_stopped(std::move(receiver));
             } else {
                 auto error = std::make_exception_ptr(
                             std::system_error(-cqe_res, std::system_category()));
-                stdexec::set_error(std::move(self->receiver), std::move(error));
+                stdexec::set_error(std::move(receiver), std::move(error));
             }
         }},
 

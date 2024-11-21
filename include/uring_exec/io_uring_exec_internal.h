@@ -35,6 +35,11 @@ struct io_uring_exec_task: detail::immovable, intrusive_node {
 // Atomic version.
 using intrusive_task_queue = detail::intrusive_queue<io_uring_exec_task, &io_uring_exec_task::_i_next>;
 
+// `internal::start_operation` is a customization point for `trivial_scheduler` template.
+inline void start_operation(intrusive_task_queue *self, auto *operation) noexcept {
+    self->push(operation);
+}
+
 ////////////////////////////////////////////////////////////////////// io_uring async operations
 
 // External structured callbacks support.
@@ -47,6 +52,72 @@ struct io_uring_exec_operation_base: detail::immovable {
                     detail::add_cancel_to_vtable  <void(_self_t*)>,
                     detail::add_restart_to_vtable <void(_self_t*)>>;
     vtable vtab;
+};
+
+////////////////////////////////////////////////////////////////////// stdexec scheduler template
+
+// For `stdexec::scheduler` concept.
+// We might have several scheduler implementations, so make a simple template for them.
+template <typename Context>
+struct trivial_scheduler {
+    template <stdexec::receiver Receiver>
+    struct operation: io_uring_exec_task {
+        using operation_state_concept = stdexec::operation_state_t;
+
+        void start() noexcept {
+            // Private customization point.
+            start_operation(context, this);
+        }
+
+        inline constexpr static vtable this_vtable {
+            {.complete = [](io_uring_exec_task *_self) noexcept {
+                auto &receiver = static_cast<operation*>(_self)->receiver;
+                using env_type = stdexec::env_of_t<Receiver>;
+                using stop_token_type = stdexec::stop_token_of_t<env_type>;
+                if constexpr (stdexec::unstoppable_token<stop_token_type>) {
+                    stdexec::set_value(std::move(receiver));
+                    return;
+                }
+                auto stop_token = stdexec::get_stop_token(stdexec::get_env(receiver));
+                stop_token.stop_requested() ?
+                    stdexec::set_stopped(std::move(receiver))
+                    : stdexec::set_value(std::move(receiver));
+            }},
+            {.cancel = [](io_uring_exec_task *_self) noexcept {
+                auto self = static_cast<operation*>(_self);
+                stdexec::set_stopped(std::move(self->receiver));
+            }}
+        };
+
+        Receiver receiver;
+        Context *context;
+    };
+    struct sender {
+        using sender_concept = stdexec::sender_t;
+        using completion_signatures = stdexec::completion_signatures<
+                                        stdexec::set_value_t(),
+                                        stdexec::set_stopped_t()>;
+        struct env {
+            template <typename CPO>
+            auto query(stdexec::get_completion_scheduler_t<CPO>) const noexcept {
+                return trivial_scheduler{context};
+            }
+            Context *context;
+        };
+
+        env get_env() const noexcept { return {context}; }
+
+        template <stdexec::receiver Receiver>
+        operation<Receiver> connect(Receiver receiver) noexcept {
+            return {{operation<Receiver>::this_vtable}, std::move(receiver), context};
+        }
+
+        Context *context;
+    };
+    bool operator<=>(const trivial_scheduler &) const=default;
+    sender schedule() const noexcept { return {context}; }
+
+    Context *context;
 };
 
 ////////////////////////////////////////////////////////////////////// Local side
@@ -66,11 +137,13 @@ struct io_uring_exec_local: public underlying_io_uring,
     using io_uring_exec_run::run_policy;
     using io_uring_exec_run::run;
 
-    using root_type = io_uring_exec;
-
     auto& get_remote() noexcept { return _root; }
     auto& get_local() noexcept { return *this; }
 
+    // This is a MPSC queue, while remote queue is a MPMC queue.
+    // It can help scheduler attach to a specified thread (C).
+    // TODO: bind_scheduler(scheduler, thread_id);
+    intrusive_task_queue _attached_queue;
     size_t _inflight {};
     io_uring_exec &_root;
 };
@@ -99,6 +172,8 @@ struct io_uring_exec: public underlying_io_uring, // For IORING_SETUP_ATTACH_WQ.
         io_uring_exec_run::terminal_run();
     }
 
+    // NOTE: Assumed that you're using a singleton pattern. (async_main())
+    // TODO: It can be sovled by type system for per-object get_local().
     auto& get_local() noexcept {
         thread_local io_uring_exec_local local(_uring_params, *this);
         return local;
@@ -110,12 +185,16 @@ struct io_uring_exec: public underlying_io_uring, // For IORING_SETUP_ATTACH_WQ.
 
     using task = internal::io_uring_exec_task;
     using operation_base = internal::io_uring_exec_operation_base;
+    using task_queue = internal::intrusive_task_queue;
 
     // Required by stdexec.
     // Most of its functions are invoked by stdexec.
-    struct scheduler;
+    using scheduler = trivial_scheduler<io_uring_exec>;
 
-    scheduler get_scheduler() noexcept;
+    scheduler get_scheduler() noexcept { return {this}; }
+
+    // TODO
+    // using attached_scheduler = trivial_scheduler<task_queue>;
 
     // Run with customizable policy.
     //
@@ -152,68 +231,14 @@ struct io_uring_exec: public underlying_io_uring, // For IORING_SETUP_ATTACH_WQ.
     exec::async_scope _transfer_scope;
     intrusive_task_queue _immediate_queue;
     alignas(64) std::atomic<size_t> _running_local {};
+
+private:
+    friend void start_operation(io_uring_exec *self, auto *operation) noexcept {
+        self->_immediate_queue.push(operation);
+    }
 };
 
-////////////////////////////////////////////////////////////////////// stdexec scheduler
-
-struct io_uring_exec::scheduler {
-    template <stdexec::receiver Receiver>
-    struct operation: io_uring_exec_task {
-        using operation_state_concept = stdexec::operation_state_t;
-
-        void start() noexcept {
-            uring->_immediate_queue.push(this);
-        }
-
-        inline constexpr static vtable this_vtable {
-            {.complete = [](io_uring_exec_task *_self) noexcept {
-                auto &receiver = static_cast<operation*>(_self)->receiver;
-                using env_type = stdexec::env_of_t<Receiver>;
-                using stop_token_type = stdexec::stop_token_of_t<env_type>;
-                if constexpr (stdexec::unstoppable_token<stop_token_type>) {
-                    stdexec::set_value(std::move(receiver));
-                    return;
-                }
-                auto stop_token = stdexec::get_stop_token(stdexec::get_env(receiver));
-                stop_token.stop_requested() ?
-                    stdexec::set_stopped(std::move(receiver))
-                    : stdexec::set_value(std::move(receiver));
-            }},
-            {.cancel = [](io_uring_exec_task *_self) noexcept {
-                auto self = static_cast<operation*>(_self);
-                stdexec::set_stopped(std::move(self->receiver));
-            }}
-        };
-
-        Receiver receiver;
-        io_uring_exec *uring;
-    };
-
-    struct sender {
-        using sender_concept = stdexec::sender_t;
-        using completion_signatures = stdexec::completion_signatures<
-                                        stdexec::set_value_t(),
-                                        stdexec::set_stopped_t()>;
-        struct env {
-            template <typename CPO>
-            auto query(stdexec::get_completion_scheduler_t<CPO>) const noexcept {
-                return scheduler{uring};
-            }
-            io_uring_exec *uring;
-        };
-
-        env get_env() const noexcept { return {uring}; }
-
-        template <stdexec::receiver Receiver>
-        operation<Receiver> connect(Receiver receiver) noexcept {
-            return {{operation<Receiver>::this_vtable}, std::move(receiver), uring};
-        }
-        io_uring_exec *uring;
-    };
-    bool operator<=>(const scheduler &) const=default;
-    sender schedule() const noexcept { return {uring}; }
-    io_uring_exec *uring;
-};
+////////////////////////////////////////////////////////////////////// misc
 
 inline
 io_uring_exec_local::io_uring_exec_local(
@@ -225,14 +250,15 @@ io_uring_exec_local::io_uring_exec_local(
     _root._running_local.fetch_add(1, std::memory_order::relaxed);
 }
 
+// FIXME:
+// There may be a UB since thread storage duration in main thread is longer than remote exec.
+// (Other threads are fine to do so.)
+// But no compiler can detect and reproduce this problem.
+// We need a local flag to check this first. Will fix it later.
 inline
 io_uring_exec_local::~io_uring_exec_local() {
     io_uring_exec_run::transfer_run();
     _root._running_local.fetch_sub(1, std::memory_order::acq_rel);
-}
-
-inline io_uring_exec::scheduler io_uring_exec::get_scheduler() noexcept {
-    return {this};
 }
 
 } // namespace internal
