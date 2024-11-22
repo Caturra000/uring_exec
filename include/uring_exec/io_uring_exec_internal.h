@@ -155,13 +155,16 @@ struct io_uring_exec: public underlying_io_uring, // For IORING_SETUP_ATTACH_WQ.
                       private detail::unified_stop_source<stdexec::inplace_stop_source>
 {
     // Example: io_uring_exec uring({.uring_entries=512});
+    template <auto Unique = []{}> // For per-object-thread_local dispatch in compile time.
     io_uring_exec(underlying_io_uring::constructor_parameters params) noexcept
-        : underlying_io_uring(params), _uring_params(params)
+        : underlying_io_uring(params), _uring_params(params),
+          _remote_handle{io_uring_exec_remote_handle::this_vtable<Unique>}
     {
         // Then it will broadcast to thread-local urings.
         params.ring_fd = this->ring_fd;
     }
 
+    template <auto = []{}> // MUST declare.
     io_uring_exec(unsigned uring_entries, int uring_flags = 0) noexcept
         : io_uring_exec({.uring_entries = uring_entries, .uring_flags = uring_flags}) {}
 
@@ -172,11 +175,14 @@ struct io_uring_exec: public underlying_io_uring, // For IORING_SETUP_ATTACH_WQ.
         io_uring_exec_run::terminal_run();
     }
 
-    // NOTE: Assumed that you're using a singleton pattern. (async_main())
-    // TODO: It can be sovled by type system for per-object get_local().
+    // NOTE: Assumed that you're most likely using a singleton pattern. (e.g., async_main())
+    // However, in some use cases, it can also be a per-object `get_local()`.
+    // For example:
+    // io_uring_exec a {...};
+    // io_uring_exec b {...};
+    // assert(&a.get_local() != &b.get_local());
     auto& get_local() noexcept {
-        thread_local io_uring_exec_local local(_uring_params, *this);
-        return local;
+        return _remote_handle.vtab.complete(*this);
     }
 
     auto& get_remote() noexcept {
@@ -233,6 +239,25 @@ struct io_uring_exec: public underlying_io_uring, // For IORING_SETUP_ATTACH_WQ.
     alignas(64) std::atomic<size_t> _running_local {};
 
 private:
+    // This makes per-io_uring_exec.get_local() possible
+    // in certain use cases. (NOT all use cases.)
+    struct io_uring_exec_remote_handle {
+        using vtable = detail::make_vtable<
+                        detail::add_complete_to_vtable<
+                            io_uring_exec_local&(io_uring_exec&)>>;
+        const vtable vtab;
+
+        template <auto>
+        inline constexpr static vtable this_vtable = {
+            {.complete = [](auto &self) noexcept -> io_uring_exec_local& {
+                // Note that we use thread storage duration for `local`.
+                // Therefore, we need <auto> to make them different types.
+                thread_local io_uring_exec_local local(self._uring_params, self);
+                return local;
+            }}
+        };
+    } _remote_handle;
+
     friend void start_operation(io_uring_exec *self, auto *operation) noexcept {
         self->_immediate_queue.push(operation);
     }
