@@ -141,6 +141,8 @@ public:
     auto& get_remote() noexcept { return _root; }
     auto& get_local() noexcept { return *this; }
 
+    auto& get_async_scope() noexcept { return _local_scope; }
+
     using scheduler = trivial_scheduler<io_uring_exec_local>;
     scheduler get_scheduler() noexcept { return {this}; }
 
@@ -161,6 +163,7 @@ private:
     // It can help scheduler attach to a specified thread (C).
     intrusive_task_queue _attached_queue;
     size_t _inflight {};
+    exec::async_scope _local_scope;
     io_uring_exec &_root;
 };
 
@@ -207,8 +210,8 @@ public:
     //
     // Example 2 can be fixed by a more complex trick without runtime mapping.
     // Although the overhead is low (rebind `_root`), I don't plan to support it.
-    auto& get_local() noexcept { return _remote_handle.vtab.complete(*this); }
-    auto& get_remote() noexcept { return *this; }
+    auto get_local() noexcept -> io_uring_exec_local& { return _remote_handle.vtab.complete(*this); }
+    auto get_remote() noexcept -> io_uring_exec& { return *this; }
 
     using task = internal::io_uring_exec_task;
     using operation_base = internal::io_uring_exec_operation_base;
@@ -217,11 +220,11 @@ public:
     // Required by stdexec.
     // Most of its functions are invoked by stdexec.
     using scheduler = trivial_scheduler<io_uring_exec>;
+    using local_scheduler = io_uring_exec_local::scheduler;
 
-    scheduler get_scheduler() noexcept { return {this}; }
-
-    // TODO
-    // using attached_scheduler = trivial_scheduler<task_queue>;
+    auto get_scheduler() noexcept { return scheduler{this}; }
+    auto get_local_scheduler() noexcept { return get_local().get_scheduler(); }
+    auto get_local_scheduler(std::thread::id) = delete; // TODO
 
     // Run with customizable policy.
     //
@@ -254,7 +257,7 @@ public:
     // Just remind you that it differs from the C++ standard.
     auto get_token() = delete;
 
-    auto& get_async_scope() noexcept { return _transfer_scope; }
+    auto get_async_scope() noexcept -> exec::async_scope& { return _transfer_scope; }
 
 // Hidden friends.
 private:

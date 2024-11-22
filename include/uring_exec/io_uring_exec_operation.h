@@ -6,9 +6,29 @@
 #include "io_uring_exec.h"
 namespace uring_exec {
 
+namespace hidden {
+
+struct nop_io_uring_exec_operation: io_uring_exec::operation_base {
+    // NOT a real operation state in stdexec.
+    constexpr nop_io_uring_exec_operation() noexcept
+        : io_uring_exec::operation_base({}, this_vtable) {}
+    inline constexpr static vtable this_vtable {
+        {.complete = [](auto, auto) noexcept {}},
+        {.cancel   = [](auto) noexcept {}},
+        {.restart  = [](auto) noexcept {}},
+    };
+};
+
+// TODO: constexpr.
+inline constinit static nop_io_uring_exec_operation noop;
+
+} // namespace hidden
+
 template <auto F, stdexec::receiver Receiver, typename ...Args>
 struct io_uring_exec_operation: io_uring_exec::operation_base {
     using operation_state_concept = stdexec::operation_state_t;
+    using stop_token_type = stdexec::stop_token_of_t<stdexec::env_of_t<Receiver>>;
+
     io_uring_exec_operation(Receiver receiver,
                             io_uring_exec *uring_control,
                             std::tuple<Args...> args) noexcept
@@ -17,16 +37,27 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
           uring_control(uring_control),
           args(std::move(args)) {}
 
-    void start() noexcept try {
+    void start() noexcept {
+        using op_base = io_uring_exec::operation_base;
         // NOTE: Don't store the thread_local value to a class member.
         // It might be transferred to a different thread.
         // See restart()/exec_run::transfer_run() for more details.
         auto &local = uring_control->get_local();
+        auto have_set_stopped = [&](io_uring_sqe *sqe) {
+            if(stop_requested()) {
+                if(sqe) { // Changed to a static noop.
+                    io_uring_sqe_set_data(sqe, static_cast<op_base*>(&hidden::noop));
+                }
+                stdexec::set_stopped(std::move(receiver));
+                return true;
+            }
+            return false;
+        };
         if(auto sqe = io_uring_get_sqe(&local)) {
-            using op_base = io_uring_exec::operation_base;
             io_uring_sqe_set_data(sqe, static_cast<op_base*>(this));
             std::apply(F, std::tuple_cat(std::tuple(sqe), std::move(args)));
             local.add_inflight();
+            if(have_set_stopped(sqe)) return;
         } else {
             // The SQ ring is currently full.
             //
@@ -35,16 +66,14 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
             //
             // Another solution is to make it never fails by deferred processing.
             // TODO: We might need some customization points for minor operations (cancel).
+            if(have_set_stopped(nullptr)) return;
             async_restart();
         }
-    } catch(...) {
-        // exec::scope.spawn() is throwable.
-        stdexec::set_error(std::move(receiver), std::current_exception());
     }
 
     // Since operations are stable (until stdexec::set_xxx(receiver)),
     // we can restart again.
-    void async_restart() {
+    void async_restart() noexcept try {
         // It can be the same thread, or other threads.
         stdexec::scheduler auto scheduler = uring_control->get_scheduler();
         stdexec::sender auto restart_sender =
@@ -53,6 +82,18 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
                 self->start();
             });
         uring_control->get_async_scope().spawn(std::move(restart_sender));
+    } catch(...) {
+        // exec::async_scope.spawn() is throwable.
+        stdexec::set_error(std::move(receiver), std::current_exception());
+    }
+
+    bool stop_requested() noexcept {
+        // Don't use stdexec::stoppable_token, it has BUG on g++/nvc++.
+        if constexpr (not stdexec::unstoppable_token<stop_token_type>) {
+            auto stop_token = stdexec::get_stop_token(stdexec::get_env(receiver));
+            return stop_token.stop_requested();
+        }
+        return false;
     }
 
     inline constexpr static vtable this_vtable {
