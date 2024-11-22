@@ -38,26 +38,25 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
           args(std::move(args)) {}
 
     void start() noexcept {
-        using op_base = io_uring_exec::operation_base;
+        if(stop_requested()) [[unlikely]] {
+            stdexec::set_stopped(std::move(receiver));
+            return;
+        }
         // NOTE: Don't store the thread_local value to a class member.
         // It might be transferred to a different thread.
         // See restart()/exec_run::transfer_run() for more details.
         auto &local = uring_control->get_local();
-        auto have_set_stopped = [&](io_uring_sqe *sqe) {
-            if(stop_requested()) {
-                if(sqe) { // Changed to a static noop.
-                    io_uring_sqe_set_data(sqe, static_cast<op_base*>(&hidden::noop));
-                }
-                stdexec::set_stopped(std::move(receiver));
-                return true;
-            }
-            return false;
-        };
-        if(auto sqe = io_uring_get_sqe(&local)) {
-            io_uring_sqe_set_data(sqe, static_cast<op_base*>(this));
-            std::apply(F, std::tuple_cat(std::tuple(sqe), std::move(args)));
+        if(auto sqe = io_uring_get_sqe(&local)) [[likely]] {
+            using op_base = io_uring_exec::operation_base;
             local.add_inflight();
-            if(have_set_stopped(sqe)) return;
+            if(false /* temporarily disabled && have_set_stopped() */) {
+                // Changed to a static noop.
+                io_uring_sqe_set_data(sqe, static_cast<op_base*>(&hidden::noop));
+                io_uring_prep_nop(sqe);
+            } else {
+                io_uring_sqe_set_data(sqe, static_cast<op_base*>(this));
+                std::apply(F, std::tuple_cat(std::tuple(sqe), std::move(args)));
+            }
         } else {
             // The SQ ring is currently full.
             //
@@ -66,7 +65,6 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
             //
             // Another solution is to make it never fails by deferred processing.
             // TODO: We might need some customization points for minor operations (cancel).
-            if(have_set_stopped(nullptr)) return;
             async_restart();
         }
     }
