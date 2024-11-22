@@ -8,6 +8,10 @@ add_requires("stdexec main", {
     system = false,
     configs = { repo = "github:NVIDIA/stdexec" }
 })
+add_requires("liburing", {
+    system = false,
+    configs = { repo = "github:axboe/liburing" }
+})
 add_requires("asio", {
     system = false,
     configs = { repo = "github:chriskohlhoff/asio" } 
@@ -26,7 +30,7 @@ for _, file in ipairs(os.files("examples/*.cpp")) do
     target(name)
         set_kind("binary")
         add_files(file)
-        add_packages("stdexec_latest")
+        add_packages("stdexec_latest", "liburing")
     table.insert(examples_targets, name)
 end
 
@@ -38,7 +42,7 @@ for _, file in ipairs(os.files("benchmarks/*.cpp")) do
         add_files(file)
         add_cxxflags("-DASIO_HAS_IO_URING -DASIO_DISABLE_EPOLL")
         add_cxxflags("-O3")
-        add_packages("stdexec_latest", "asio")
+        add_packages("stdexec_latest", "liburing", "asio")
         table.insert(benchmarks_targets, name)
 end
 
@@ -54,6 +58,8 @@ target("benchmarks")
         import("core.base.option")
         local script_path = "./benchmarks/pingpong.py"
         local args = option.get("arguments") or {}
+        table.insert(args, 1, "--xmake")
+        table.insert(args, 2, "y")
         os.execv("python3", {script_path, unpack(args)})
     end)
 
