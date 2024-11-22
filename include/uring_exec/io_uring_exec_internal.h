@@ -122,13 +122,14 @@ struct trivial_scheduler {
 
 ////////////////////////////////////////////////////////////////////// Local side
 
-struct io_uring_exec;
+class io_uring_exec;
 
 // Is-a runnable io_uring.
-struct io_uring_exec_local: public underlying_io_uring,
-                            public io_uring_exec_run<io_uring_exec_local,
-                                            io_uring_exec_operation_base>
+class io_uring_exec_local: public underlying_io_uring,
+                           public io_uring_exec_run<io_uring_exec_local,
+                                           io_uring_exec_operation_base>
 {
+public:
     io_uring_exec_local(constructor_parameters p,
                         io_uring_exec &root);
 
@@ -140,9 +141,24 @@ struct io_uring_exec_local: public underlying_io_uring,
     auto& get_remote() noexcept { return _root; }
     auto& get_local() noexcept { return *this; }
 
+    using scheduler = trivial_scheduler<io_uring_exec_local>;
+    scheduler get_scheduler() noexcept { return {this}; }
+
+    void add_inflight() noexcept { _inflight++; }
+    void remove_inflight() noexcept { _inflight--; }
+
+// Hidden friends.
+private:
+    friend void start_operation(io_uring_exec_local *self, auto *operation) noexcept {
+        self->_attached_queue.push(operation);
+    }
+
+    template <typename, typename>
+    friend struct io_uring_exec_run;
+
+private:
     // This is a MPSC queue, while remote queue is a MPMC queue.
     // It can help scheduler attach to a specified thread (C).
-    // TODO: bind_scheduler(scheduler, thread_id);
     intrusive_task_queue _attached_queue;
     size_t _inflight {};
     io_uring_exec &_root;
@@ -150,10 +166,11 @@ struct io_uring_exec_local: public underlying_io_uring,
 
 ////////////////////////////////////////////////////////////////////// control block
 
-struct io_uring_exec: public underlying_io_uring, // For IORING_SETUP_ATTACH_WQ.
-                      public io_uring_exec_run<io_uring_exec, io_uring_exec_operation_base>,
-                      private detail::unified_stop_source<stdexec::inplace_stop_source>
+class io_uring_exec: public underlying_io_uring, // For IORING_SETUP_ATTACH_WQ.
+                     public io_uring_exec_run<io_uring_exec, io_uring_exec_operation_base>,
+                     private detail::unified_stop_source<stdexec::inplace_stop_source>
 {
+public:
     // Example: io_uring_exec uring({.uring_entries=512});
     template <auto Unique = []{}> // For per-object-thread_local dispatch in compile time.
     io_uring_exec(underlying_io_uring::constructor_parameters params) noexcept
@@ -177,17 +194,21 @@ struct io_uring_exec: public underlying_io_uring, // For IORING_SETUP_ATTACH_WQ.
 
     // NOTE: Assumed that you're most likely using a singleton pattern. (e.g., async_main())
     // However, in some use cases, it can also be a per-object `get_local()`.
-    // For example:
+    //
+    // Example 1 (Good):
     // io_uring_exec a {...};
     // io_uring_exec b {...};
     // assert(&a.get_local() != &b.get_local());
-    auto& get_local() noexcept {
-        return _remote_handle.vtab.complete(*this);
-    }
-
-    auto& get_remote() noexcept {
-        return *this;
-    }
+    //
+    // Example 2 (Bad):
+    // for(auto step : iota(1))
+    //     io_uring_exec c {...};
+    // assert(&c<in-step-1>.get_local() == &c<in-step-2>.get_local());
+    //
+    // Example 2 can be fixed by a more complex trick without runtime mapping.
+    // Although the overhead is low (rebind `_root`), I don't plan to support it.
+    auto& get_local() noexcept { return _remote_handle.vtab.complete(*this); }
+    auto& get_remote() noexcept { return *this; }
 
     using task = internal::io_uring_exec_task;
     using operation_base = internal::io_uring_exec_operation_base;
@@ -233,10 +254,23 @@ struct io_uring_exec: public underlying_io_uring, // For IORING_SETUP_ATTACH_WQ.
     // Just remind you that it differs from the C++ standard.
     auto get_token() = delete;
 
+    auto& get_async_scope() noexcept { return _transfer_scope; }
+
+// Hidden friends.
+private:
+    template <typename, typename>
+    friend struct io_uring_exec_run;
+    friend class io_uring_exec_local;
+
+    friend void start_operation(io_uring_exec *self, auto *operation) noexcept {
+        self->_immediate_queue.push(operation);
+    }
+
+private:
     underlying_io_uring::constructor_parameters _uring_params;
-    exec::async_scope _transfer_scope;
     intrusive_task_queue _immediate_queue;
     alignas(64) std::atomic<size_t> _running_local {};
+    exec::async_scope _transfer_scope;
 
 private:
     // This makes per-io_uring_exec.get_local() possible
@@ -251,16 +285,13 @@ private:
         inline constexpr static vtable this_vtable = {
             {.complete = [](auto &self) noexcept -> io_uring_exec_local& {
                 // Note that we use thread storage duration for `local`.
-                // Therefore, we need <auto> to make them different types.
+                // Therefore, we need <auto> to make them served by different types.
                 thread_local io_uring_exec_local local(self._uring_params, self);
                 return local;
             }}
         };
     } _remote_handle;
 
-    friend void start_operation(io_uring_exec *self, auto *operation) noexcept {
-        self->_immediate_queue.push(operation);
-    }
 };
 
 ////////////////////////////////////////////////////////////////////// misc

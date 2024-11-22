@@ -15,7 +15,7 @@
 namespace uring_exec {
 namespace internal {
 
-struct io_uring_exec_local;
+class io_uring_exec_local;
 
 // CRTP for `io_uring_exec_local::run()` and `io_uring_exec_local::final_run()`.
 template <typename Exec_crtp_derived,
@@ -292,6 +292,7 @@ struct io_uring_exec_run {
         return progress_info(0);
     }
 
+protected:
     void transfer_run() {
         auto &local = that()->get_local();
         submit_destructive_command(local);

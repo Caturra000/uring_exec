@@ -26,7 +26,7 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
             using op_base = io_uring_exec::operation_base;
             io_uring_sqe_set_data(sqe, static_cast<op_base*>(this));
             std::apply(F, std::tuple_cat(std::tuple(sqe), std::move(args)));
-            local._inflight++;
+            local.add_inflight();
         } else {
             // The SQ ring is currently full.
             //
@@ -52,7 +52,7 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
           | stdexec::then([self = this] {
                 self->start();
             });
-        uring_control->_transfer_scope.spawn(std::move(restart_sender));
+        uring_control->get_async_scope().spawn(std::move(restart_sender));
     }
 
     inline constexpr static vtable this_vtable {
