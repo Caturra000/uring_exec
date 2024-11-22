@@ -165,6 +165,7 @@ private:
     size_t _inflight {};
     exec::async_scope _local_scope;
     io_uring_exec &_root;
+    std::thread::id _root_tid;
 };
 
 ////////////////////////////////////////////////////////////////////// control block
@@ -178,6 +179,7 @@ public:
     template <auto Unique = []{}> // For per-object-thread_local dispatch in compile time.
     io_uring_exec(underlying_io_uring::constructor_parameters params) noexcept
         : underlying_io_uring(params), _uring_params(params),
+          _thread_id(std::this_thread::get_id()),
           _remote_handle{io_uring_exec_remote_handle::this_vtable<Unique>}
     {
         // Then it will broadcast to thread-local urings.
@@ -274,6 +276,7 @@ private:
     intrusive_task_queue _immediate_queue;
     alignas(64) std::atomic<size_t> _running_local {};
     exec::async_scope _transfer_scope;
+    std::thread::id _thread_id;
 
 private:
     // This makes per-io_uring_exec.get_local() possible
@@ -304,19 +307,22 @@ io_uring_exec_local::io_uring_exec_local(
     io_uring_exec_local::constructor_parameters p,
     io_uring_exec &root)
     : underlying_io_uring(p),
-      _root(root)
+      _root(root),
+      _root_tid(root._thread_id)
 {
     _root._running_local.fetch_add(1, std::memory_order::relaxed);
 }
 
-// FIXME:
-// There may be a UB since thread storage duration in main thread is longer than remote exec.
+// There may be a UB if `_root` is accessed unconditionally,
+// since thread storage duration in main thread is longer than remote exec.
 // (Other threads are fine to do so.)
 // But no compiler can detect and reproduce this problem.
-// We need a local flag to check this first. Will fix it later.
+// In any case, we need a local tid to perform the check.
 inline
 io_uring_exec_local::~io_uring_exec_local() {
     io_uring_exec_run::transfer_run();
+    thread_local auto tid = std::this_thread::get_id();
+    if(tid == _root_tid) return;
     _root._running_local.fetch_sub(1, std::memory_order::acq_rel);
 }
 
