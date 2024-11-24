@@ -4,6 +4,7 @@
 #include <mutex>
 #include <thread>
 #include <tuple>
+#include <array>
 #include <liburing.h>
 #include <stdexec/execution.hpp>
 #include <exec/async_scope.hpp>
@@ -44,13 +45,14 @@ inline void start_operation(intrusive_task_queue *self, auto *operation) noexcep
 
 // External structured callbacks support.
 // See io_uring_exec_operation.h and io_uring_exec_sender.h for more details.
-struct io_uring_exec_operation_base: detail::immovable {
+struct io_uring_exec_operation_base: detail::immovable, intrusive_node {
     using result_t = decltype(std::declval<io_uring_cqe>().res);
     using _self_t = io_uring_exec_operation_base;
     using vtable = detail::make_vtable<
                     detail::add_complete_to_vtable<void(_self_t*, result_t)>,
                     detail::add_cancel_to_vtable  <void(_self_t*)>,
                     detail::add_restart_to_vtable <void(_self_t*)>>;
+    constexpr io_uring_exec_operation_base(vtable vtab) noexcept: vtab(vtab) {}
     vtable vtab;
 };
 
@@ -149,6 +151,22 @@ public:
     void add_inflight() noexcept { _inflight++; }
     void remove_inflight() noexcept { _inflight--; }
 
+    inline constexpr static size_t N_way_buckets_in_stopping = 16;
+    using intrusive_operation_queue = detail::intrusive_queue<
+                                        io_uring_exec_operation_base,
+                                       &io_uring_exec_operation_base::_i_next>;
+    using intrusive_operation_map = std::array<intrusive_operation_queue, N_way_buckets_in_stopping>;
+
+    decltype(auto) get_stopping_queue(size_t index) noexcept {
+        return _stopping_map[index];
+    }
+
+    decltype(auto) get_stopping_queue(io_uring_exec_operation_base *op) noexcept
+    {
+        auto index = std::bit_cast<uintptr_t>(op) % N_way_buckets_in_stopping;
+        return get_stopping_queue(index);
+    }
+
 // Hidden friends.
 private:
     friend void start_operation(io_uring_exec_local *self, auto *operation) noexcept {
@@ -157,11 +175,13 @@ private:
 
     template <typename, typename>
     friend struct io_uring_exec_run;
+    friend class io_uring_exec;
 
 private:
     // This is a MPSC queue, while remote queue is a MPMC queue.
     // It can help scheduler attach to a specified thread (C).
     intrusive_task_queue _attached_queue;
+    intrusive_operation_map _stopping_map;
     size_t _inflight {};
     exec::async_scope _local_scope;
     io_uring_exec &_root;

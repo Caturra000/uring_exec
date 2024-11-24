@@ -6,7 +6,7 @@
 #include <ranges>
 #include <format>
 #include <cassert>
-#include <exec/repeat_n.hpp>
+#include <exec/when_any.hpp>
 #include <exec/repeat_effect_until.hpp>
 #include "uring_exec.hpp"
 
@@ -23,7 +23,7 @@ auto my_async_connect(io_uring_exec::scheduler s, auto ...args) {
 
 stdexec::sender
 auto ping(io_uring_exec::scheduler scheduler,
-          int client_fd, int blocksize, auto stop_token) {
+          int client_fd, int blocksize) {
     return
         stdexec::just(std::vector<char>(blocksize, 'x'), size_t{}, size_t{})
       | stdexec::let_value([=](auto &buf, auto &r, auto &w) {
@@ -38,10 +38,15 @@ auto ping(io_uring_exec::scheduler scheduler,
                 })
               | stdexec::let_value([=, &r](int read_bytes) {
                     r += read_bytes;
-                    return stdexec::just(stop_token.stop_requested());
+                    return stdexec::just(false);
+                })
+              | stdexec::let_error([](auto &&) {
+                    return stdexec::just(true);
+                })
+              | stdexec::let_stopped([] {
+                    return stdexec::just(true);
                 })
               | exec::repeat_effect_until()
-              | stdexec::upon_error(noop)
               | stdexec::let_value([&] {
                     return stdexec::just(r, w);
                 });
@@ -51,8 +56,7 @@ auto ping(io_uring_exec::scheduler scheduler,
 stdexec::sender
 auto client(io_uring_exec::scheduler scheduler,
             auto endpoint, int blocksize,
-            std::atomic<size_t> &r, std::atomic<size_t> &w,
-            auto stop_token) {
+            std::atomic<size_t> &r, std::atomic<size_t> &w) {
     auto make_addr = [](auto endpoint) {
         auto [host, port] = endpoint;
         sockaddr_in addr_in {};
@@ -72,7 +76,7 @@ auto client(io_uring_exec::scheduler scheduler,
                  | stdexec::then([=](auto&&) { return client_fd; });
         })
       | stdexec::let_value([=, &r, &w](int client_fd) {
-            return ping(scheduler, client_fd, blocksize, stop_token)
+            return ping(scheduler, client_fd, blocksize)
                  | stdexec::then([=, &r, &w](size_t read_bytes, size_t written_bytes) {
                        r.fetch_add(read_bytes);
                        w.fetch_add(written_bytes);
@@ -108,32 +112,31 @@ int main(int argc, char *argv[]) {
         j = std::jthread([&](auto stop_token) { uring.run(stop_token); });
     }
 
-    stdexec::inplace_stop_source iss;
     exec::async_scope scope;
     stdexec::scheduler auto scheduler = uring.get_scheduler();
     auto endpoint = std::tuple(host, port);
     std::atomic<size_t> r {};
     std::atomic<size_t> w {};
 
-    stdexec::sender auto deadline =
-        stdexec::schedule(scheduler)
-      | stdexec::let_value([=] {
-            return uring_exec::async_wait(scheduler, std::chrono::seconds(timeout));
-        })
-      | stdexec::then([&](auto&&) { iss.request_stop(); });
-    scope.spawn(std::move(deadline));
-
     for(auto n = sessions; n--;) {
         stdexec::sender auto s =
             stdexec::schedule(scheduler)
-          | stdexec::let_value([=, &r, &w, &iss] {
-                return client(scheduler, endpoint, blocksize, r, w, iss.get_token());
+          | stdexec::let_value([=, &r, &w] {
+                return client(scheduler, endpoint, blocksize, r, w);
             })
           | stdexec::then(noop);
         scope.spawn(s);
     }
 
-    stdexec::sync_wait(scope.on_empty());
+    stdexec::sender auto deadline =
+        stdexec::schedule(scheduler)
+      | stdexec::let_value([=] {
+            return uring_exec::async_wait(scheduler, std::chrono::seconds(timeout));
+        })
+      | stdexec::then([&](auto&&) { scope.request_stop(); });
+
+    stdexec::sender auto timed_execution = exec::when_any(std::move(deadline), scope.on_empty());
+    stdexec::sync_wait(std::move(timed_execution));
 
     double read_bytes = r.load();
     double written_bytes = w.load();

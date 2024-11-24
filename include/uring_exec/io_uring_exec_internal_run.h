@@ -47,6 +47,7 @@ struct io_uring_exec_run {
         bool detached {false};          // Ignore stop requests from `io_uring_exec`.
         bool progress {false};          // run() returns run_progress_info.
         bool no_delay {false};          // Complete I/O as fast as possible.
+        bool can_stop {true};           // in-flight operations can stop early.
 
         bool transfer {false};          // For stopeed local context. Just a tricky restart.
         bool terminal {false};          // For stopped remote context. Cancel All.
@@ -191,6 +192,21 @@ struct io_uring_exec_run {
                 } else {
                     submitted = io_uring_submit(&local);
                 }
+            }
+
+            if constexpr (policy.can_stop) {
+                constexpr auto N = std::decay_t<decltype(local)>::N_way_buckets_in_stopping;
+                auto &q = local.get_stopping_queue(step % N);
+                auto op = q.move_all();
+                for(; op; op = q.next(op)) {
+                    auto sqe = io_uring_get_sqe(&local);
+                    if(!sqe) break;
+                    io_uring_sqe_set_data(sqe, &noop);
+                    io_uring_prep_cancel(sqe, op, {});
+                    local.add_inflight();
+                }
+                // Retry in the next time.
+                if(op) q.push_all(op, [](auto node) { return node; });
             }
 
             if constexpr (policy.iodone) {
@@ -371,7 +387,7 @@ private:
         {.restart  = [](auto) noexcept {}},
     };
 
-    inline constinit static io_uring_exec_operation_base noop {{}, noop_vtable};
+    inline constinit static io_uring_exec_operation_base noop {noop_vtable};
 };
 
 } // namespace internal
