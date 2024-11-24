@@ -201,11 +201,6 @@ struct io_uring_exec_run {
                 };
                 auto consume_one = [&](io_uring_cqe* cqe) {
                     auto user_data = io_uring_cqe_get_data(cqe);
-                    if constexpr (policy.terminal || policy.transfer) {
-                        if(test_destructive_command(user_data)) {
-                            return;
-                        }
-                    }
                     using uop = io_uring_exec_operation_base;
                     auto uring_op = std::bit_cast<uop*>(user_data);
                     if constexpr (policy.transfer) {
@@ -346,6 +341,7 @@ private:
             return T{};
         } (io_uring_sqe_set_data));
 
+    [[deprecated("destructive_command is now a nop operation.")]]
     constexpr auto make_destructive_command() noexcept {
         // Impossible address for Linux user space.
         auto impossible = std::numeric_limits<std::uintptr_t>::max();
@@ -353,6 +349,7 @@ private:
         return std::bit_cast<unified_user_data_type>(impossible);
     }
 
+    [[deprecated("destructive_command is now a nop operation.")]]
     constexpr auto test_destructive_command(unified_user_data_type user_data) noexcept {
         return make_destructive_command() == user_data;
     }
@@ -361,10 +358,20 @@ private:
         // Flush, and ensure that the cancel-sqe must be allocated successfully.
         io_uring_submit(&uring);
         auto sqe = io_uring_get_sqe(&uring);
-        io_uring_sqe_set_data(sqe, make_destructive_command());
+        // `noop` is an object with static storage duration.
+        // It makes no effect, but it can reduce if-statement branches.
+        io_uring_sqe_set_data(sqe, &noop);
         io_uring_prep_cancel(sqe, {}, IORING_ASYNC_CANCEL_ANY);
         io_uring_submit(&uring);
     }
+
+    inline constexpr static io_uring_exec_operation_base::vtable noop_vtable {
+        {.complete = [](auto, auto) noexcept {}},
+        {.cancel   = [](auto) noexcept {}},
+        {.restart  = [](auto) noexcept {}},
+    };
+
+    inline constinit static io_uring_exec_operation_base noop {{}, noop_vtable};
 };
 
 } // namespace internal
