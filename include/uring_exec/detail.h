@@ -40,15 +40,32 @@ struct intrusive_queue<T, Next> {
         } while(!_head.compare_exchange_weak(node, op, write_mo, read_mo));
     }
 
+    [[nodiscard]]
     T* move_all() noexcept {
         auto node = _head.load(read_mo);
         while(!_head.compare_exchange_weak(node, nullptr, write_mo, read_mo));
         return static_cast<T*>(node);
     }
 
+    // Push until predicate() == false to queue.
+    void push_all(T *first, auto predicate) noexcept {
+        Node *last = first;
+        if(!predicate(first)) return;
+        while(predicate(static_cast<T*>(last->*Next))) last = last->*Next;
+        auto node = _head.load(read_mo);
+        do {
+            last->*Next = node;
+        } while(!_head.compare_exchange_weak(node, first, write_mo, read_mo));
+    }
+
     // A unified interface to get the next element.
-    inline static T* next(/*TODO: concept*/ auto *node_or_element) noexcept {
+    inline static T* next(Node *node_or_element) noexcept {
         return static_cast<T*>(node_or_element->*Next);
+    }
+
+    // A unified interface to clear the node's metadata.
+    inline static void clear(Node *node) noexcept {
+        node->*Next = nullptr;
     }
 
 private:

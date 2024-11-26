@@ -4,6 +4,7 @@
 #include <mutex>
 #include <thread>
 #include <tuple>
+#include <array>
 #include <liburing.h>
 #include <stdexec/execution.hpp>
 #include <exec/async_scope.hpp>
@@ -42,16 +43,44 @@ inline void start_operation(intrusive_task_queue *self, auto *operation) noexcep
 
 ////////////////////////////////////////////////////////////////////// io_uring async operations
 
+// For (personal) debugging purpose, make it a different type from `intrusive_node`.
+struct intrusive_node_with_meta {
+    intrusive_node_with_meta *_i_m_next {nullptr};
+
+#ifdef URING_EXEC_DEBUG
+    void *_for_gdb {};
+#endif
+};
+
 // External structured callbacks support.
 // See io_uring_exec_operation.h and io_uring_exec_sender.h for more details.
-struct io_uring_exec_operation_base: detail::immovable {
+struct io_uring_exec_operation_base: detail::immovable, intrusive_node_with_meta {
     using result_t = decltype(std::declval<io_uring_cqe>().res);
     using _self_t = io_uring_exec_operation_base;
     using vtable = detail::make_vtable<
                     detail::add_complete_to_vtable<void(_self_t*, result_t)>,
                     detail::add_cancel_to_vtable  <void(_self_t*)>,
                     detail::add_restart_to_vtable <void(_self_t*)>>;
+    constexpr io_uring_exec_operation_base(vtable vtab) noexcept: vtab(vtab) {}
     vtable vtab;
+    // We might need a bidirectional intrusive node for early stopping support.
+    // However, this feature is rarely used in practice.
+    // We can use hashmap instead to avoid wasting footprint for every object's memory layout.
+};
+
+using intrusive_operation_queue = detail::intrusive_queue<
+                                    io_uring_exec_operation_base,
+                                    &io_uring_exec_operation_base::_i_m_next>;
+
+struct intrusive_operation_map {
+    auto& operator[](size_t index) noexcept { return map[index]; }
+    auto& operator[](io_uring_exec_operation_base *op) noexcept {
+        // operations are stable in address.
+        auto index = std::bit_cast<uintptr_t>(op) % N_way_buckets_in_stopping;
+        return map[index];
+    }
+    inline constexpr static size_t N_way_buckets_in_stopping = 16;
+    std::array<intrusive_operation_queue, N_way_buckets_in_stopping> map;
 };
 
 ////////////////////////////////////////////////////////////////////// stdexec scheduler template
@@ -149,6 +178,21 @@ public:
     void add_inflight() noexcept { _inflight++; }
     void remove_inflight() noexcept { _inflight--; }
 
+    decltype(auto) get_stopping_queue(io_uring_exec_operation_base *op) noexcept {
+        return _stopping_map[op];
+    }
+
+// For runloop.
+private:
+    decltype(auto) get_stopping_queue(size_t index) noexcept {
+        return _stopping_map[index];
+    }
+
+    decltype(auto) get_stopping_queue_robin(size_t index) noexcept {
+        constexpr auto N = intrusive_operation_map::N_way_buckets_in_stopping;
+        return _stopping_map[index % N];
+    }
+
 // Hidden friends.
 private:
     friend void start_operation(io_uring_exec_local *self, auto *operation) noexcept {
@@ -157,11 +201,13 @@ private:
 
     template <typename, typename>
     friend struct io_uring_exec_run;
+    friend class io_uring_exec;
 
 private:
     // This is a MPSC queue, while remote queue is a MPMC queue.
     // It can help scheduler attach to a specified thread (C).
     intrusive_task_queue _attached_queue;
+    intrusive_operation_map _stopping_map;
     size_t _inflight {};
     exec::async_scope _local_scope;
     io_uring_exec &_root;

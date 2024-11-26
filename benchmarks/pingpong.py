@@ -4,19 +4,22 @@ import argparse
 
 parser = argparse.ArgumentParser(description="Run ping-pong tests with different servers.")
 parser.add_argument("--server", choices=["uring_exec", "asio"], default="uring_exec")
+parser.add_argument("--client", choices=["default", "when_any"], default="default")
 parser.add_argument("--xmake", choices=["y", "n"], default="n")
 args = parser.parse_args()
 
 server_name = "pong" if args.server == "uring_exec" else "pong_asio"
-client_name = "ping"
+client_name = "ping" if args.client == "default" else "ping_when_any"
 
 use_xmake = (args.xmake == "y")
 
 blocksize = "16384"
-timeout = "5" # s
+timeout = "10" # s
 port = "8848"
 
 print("Server:", args.server)
+print("Client:", args.client)
+print("==========")
 for thread in [2, 4, 8]:
     for session in [10, 100, 1000]:
         print(">> thread:", thread, "session:", session)

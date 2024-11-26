@@ -47,6 +47,7 @@ struct io_uring_exec_run {
         bool detached {false};          // Ignore stop requests from `io_uring_exec`.
         bool progress {false};          // run() returns run_progress_info.
         bool no_delay {false};          // Complete I/O as fast as possible.
+        bool blocking {false};          // in-flight operations cannot be interrupted by a stop request.
 
         bool transfer {false};          // For stopeed local context. Just a tricky restart.
         bool terminal {false};          // For stopped remote context. Cancel All.
@@ -234,6 +235,25 @@ struct io_uring_exec_run {
                 }
             }
 
+            // Not accounted in progress info.
+            if constexpr (not policy.blocking) {
+                // No need to traverse the map.
+                auto &q = local.get_stopping_queue_robin(step);
+                // No need to use `safe_for_each`.
+                for(auto op = q.move_all(); op;) {
+                    auto sqe = io_uring_get_sqe(&local);
+                    // `uring` is currently full. Retry in the next round.
+                    if(!sqe) [[unlikely]] {
+                        q.push_all(op, [](auto node) { return node; });
+                        break;
+                    }
+                    io_uring_sqe_set_data(sqe, &noop);
+                    io_uring_prep_cancel(sqe, op, {});
+                    local.add_inflight();
+                    q.clear(std::exchange(op, q.next(op)));
+                }
+            }
+
             if constexpr (policy.weakly_parallel) {
                 return progress_info(step);
             }
@@ -371,7 +391,7 @@ private:
         {.restart  = [](auto) noexcept {}},
     };
 
-    inline constinit static io_uring_exec_operation_base noop {{}, noop_vtable};
+    inline constinit static io_uring_exec_operation_base noop {noop_vtable};
 };
 
 } // namespace internal

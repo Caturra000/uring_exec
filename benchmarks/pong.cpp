@@ -73,16 +73,10 @@ int main(int argc, char *argv[]) {
     }
 
     stdexec::scheduler auto scheduler = uring.get_scheduler();
-    stdexec::sender auto s =
-        stdexec::schedule(scheduler)
-      | stdexec::let_value([=, &scope] {
-            return server(scheduler, scope, server_fd, blocksize, sessions);
-        });
-    stdexec::sender auto f =
-        stdexec::schedule(scheduler)
-      | stdexec::let_value([=] {
-            return uring_exec::async_close(scheduler, server_fd);
-        });
+    stdexec::sender auto s = stdexec::starts_on(scheduler,
+        server(scheduler, scope, server_fd, blocksize, sessions));
+    stdexec::sender auto f = stdexec::starts_on(scheduler,
+        uring_exec::async_close(scheduler, server_fd));
     auto sequence = [](stdexec::sender auto ...senders) {
         (stdexec::sync_wait(std::move(senders)), ...);
     };
