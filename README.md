@@ -68,31 +68,51 @@ int main() {
 }
 ```
 
-For more usage examples, refer to the `examples` directory.
+See the `/examples` directory for more usage examples.
 
 ## Build
 
 This is a C++20 header-only library; simply include it in your project.
 
 If you want to try some examples or benchmark tests, use `xmake`:
-* `xmake build examples`, then `xmake run <example_name>`. (For example, `xmake run hello_coro`.)
-* `xmake build benchmarks && xmake run benchmarks`.
+* `xmake build examples`: Build all example files.
+* `xmake run <example_name>`: Run a specified example application. (For example, `xmake run hello_coro`.)
+* `xmake build benchmarks && xmake run benchmarks`: Build and run the ping-pong test.
 
 `make` is also supported, but you should ensure that:
 * Both `stdexec` and `liburing` are available locally.
 * `asio` is optional.
 
 Then you can:
-* `make all`: build all examples and benchmarks.
-* `make <example_name>`: build a specified example file.
-* `make <benchmark_name>`: build a specified benchmark file.
-* `make benchmark_script`: run the ping-pong test.
+* `make all`: Build all examples and benchmarks.
+* `make <example_name>`: Build a specified example file.
+* `make <benchmark_name>`: Build a specified benchmark file.
+* `make benchmark_script`: Run the ping-pong test.
 
 It is recommended to use at least Linux kernel version 6.1.
 
 ## Benchmark
 
-See `/benchmarks` for benchmark report.
+Here is my benchmark report on:
+* {Linux v6.4.8}
+* {AMD 5800H, 16 GB}
+* {uring_exec 22a6674, asio 62481a2}
+* {gcc v13.2.0 -O3}
+* {ping-pong: blocksize = 16384, timeout = 5s, throughput unit = GiB/s}
+
+| threads / sessions | asio (io_uring) | uring_exec |
+| ------------------ | --------------- | ---------- |
+| 2 / 10             | 1.868           | 3.409      |
+| 2 / 100            | 2.744           | 3.870      |
+| 2 / 1000           | 1.382           | 2.270      |
+| 4 / 10             | 1.771           | 3.164      |
+| 4 / 100            | 2.694           | 3.477      |
+| 4 / 1000           | 1.275           | 4.411      |
+| 8 / 10             | 0.978           | 2.522      |
+| 8 / 100            | 2.107           | 2.676      |
+| 8 / 1000           | 1.177           | 3.956      |
+
+See the `/benchmarks` directory for more details.
 
 ## Notes
 

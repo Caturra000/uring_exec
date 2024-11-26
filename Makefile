@@ -21,7 +21,7 @@ examples: $(ALL_EXAMPLES_TARGETS)
 
 benchmarks: $(ALL_BENCH_TARGETS)
 
-benchmark_script: benchmarks
+benchmark_script:
 	python $(BENCH)/pingpong.py
 
 clean:
@@ -33,4 +33,4 @@ clean:
 
 %: $(BENCH)/%.cpp
 	@mkdir -p $(BUILD)
-	$(CXX) $(CXX_FLAGS) $(CXX_FLAGS_DEBUG) -o $(BUILD)/$@
+	$(CXX) $(CXX_FLAGS) $(CXX_FLAGS_DEBUG) -O3 -o $(BUILD)/$@
