@@ -130,12 +130,8 @@ int main(int argc, char *argv[]) {
 
     for(auto n = sessions; n--;) {
         stdexec::sender auto s =
-            stdexec::schedule(scheduler)
-          | stdexec::let_value([=, &r, &w] {
-                return client(scheduler, endpoint, blocksize, r, w);
-            })
-          | stdexec::then(noop);
-        scope.spawn(s);
+            stdexec::starts_on(scheduler, client(scheduler, endpoint, blocksize, r, w));
+        scope.spawn(std::move(s));
     }
 
     stdexec::sender auto deadline =
