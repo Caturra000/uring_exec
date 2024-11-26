@@ -111,13 +111,18 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
     }
 
     struct early_stopping {
+        // May be called by the requesting thread.
+        // So we need an atomic operation.
         void operator()() noexcept {
             auto local = _self->local_scheduler.context;
             auto &q = local->get_stopping_queue(_self);
+            // `q` and `self` are stable.
             q.push(_self);
         }
         io_uring_exec_operation *_self;
     };
+
+    // For stdexec.
     using stop_callback_type = typename stop_token_type::template callback_type<early_stopping>;
 
     inline constexpr static vtable this_vtable {

@@ -203,6 +203,7 @@ struct io_uring_exec_run {
                     if(!sqe) break;
                     io_uring_sqe_set_data(sqe, &noop);
                     io_uring_prep_cancel(sqe, op, {});
+                    q.clear(op);
                     local.add_inflight();
                 }
                 // Retry in the next time.

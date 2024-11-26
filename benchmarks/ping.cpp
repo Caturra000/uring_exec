@@ -36,18 +36,14 @@ auto ping(io_uring_exec::scheduler scheduler,
                     w += written_bytes;
                     return uring_exec::async_read(scheduler, client_fd, buf.data(), written_bytes);
                 })
-              | stdexec::let_value([=, &r](int read_bytes) {
+              | stdexec::let_value([&r, &w](int read_bytes) {
                     r += read_bytes;
-                    return stdexec::just(false);
+                    return stdexec::just(r, w);
                 })
-              | stdexec::let_error([](auto &&) {
-                    return stdexec::just(true);
+              | stdexec::let_error([&](auto &&) {
+                    return stdexec::just(r, w);
                 })
-              | stdexec::let_stopped([] {
-                    return stdexec::just(true);
-                })
-              | exec::repeat_effect_until()
-              | stdexec::let_value([&] {
+              | stdexec::let_stopped([&] {
                     return stdexec::just(r, w);
                 });
         });
@@ -73,20 +69,34 @@ auto client(io_uring_exec::scheduler scheduler,
         })
       | stdexec::let_value([=, addr = make_addr(endpoint)](int client_fd) {
             return my_async_connect(scheduler, client_fd, &addr, sizeof addr)
-                 | stdexec::then([=](auto&&) { return client_fd; });
-        })
-      | stdexec::let_value([=, &r, &w](int client_fd) {
-            return ping(scheduler, client_fd, blocksize)
-                 | stdexec::then([=, &r, &w](size_t read_bytes, size_t written_bytes) {
-                       r.fetch_add(read_bytes);
-                       w.fetch_add(written_bytes);
-                       return client_fd;
+                 | stdexec::let_value([=](auto&&) {
+                       return stdexec::just(client_fd, size_t{}, size_t{});
                    });
+        })
+      | stdexec::let_value([=, &r, &w](int client_fd, size_t &client_read, size_t &client_written) {
+            auto collect = [&, client_fd](auto &&...) {
+                constexpr auto mo = std::memory_order::relaxed;
+                r.fetch_add(client_read, mo);
+                w.fetch_add(client_written, mo);
+                return stdexec::just(client_fd);
+            };
+            return
+                ping(scheduler, client_fd, blocksize)
+              | stdexec::let_value([&](size_t read_bytes, size_t written_bytes) {
+                    client_read += read_bytes;
+                    client_written += written_bytes;
+                    return stdexec::just(false);
+                })
+              | exec::repeat_effect_until()
+              | stdexec::let_value(collect)
+              | stdexec::let_stopped(collect)
+              | stdexec::let_error(collect);
         })
       | stdexec::let_value([=](int client_fd) {
             return uring_exec::async_close(scheduler, client_fd);
         })
       | stdexec::upon_error(noop)
+      | stdexec::upon_stopped(noop)
       | stdexec::then(noop);
 }
 

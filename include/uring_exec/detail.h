@@ -47,7 +47,7 @@ struct intrusive_queue<T, Next> {
         return static_cast<T*>(node);
     }
 
-    // Push predicate() == true to queue.
+    // Push until predicate() == false to queue.
     void push_all(T *first, auto predicate) noexcept {
         Node *last = first;
         if(!predicate(first)) return;
@@ -59,8 +59,13 @@ struct intrusive_queue<T, Next> {
     }
 
     // A unified interface to get the next element.
-    inline static T* next(/*TODO: concept*/ auto *node_or_element) noexcept {
+    inline static T* next(Node *node_or_element) noexcept {
         return static_cast<T*>(node_or_element->*Next);
+    }
+
+    // A unified interface to clear the node's metadata.
+    inline static void clear(Node *node) noexcept {
+        node->*Next = nullptr;
     }
 
 private:
