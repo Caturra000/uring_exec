@@ -43,9 +43,18 @@ inline void start_operation(intrusive_task_queue *self, auto *operation) noexcep
 
 ////////////////////////////////////////////////////////////////////// io_uring async operations
 
+// For (personal) debugging purpose, make it a different type from `intrusive_node`.
+struct intrusive_node_with_meta {
+    intrusive_node_with_meta *_i_m_next {nullptr};
+
+#ifdef URING_EXEC_DEBUG
+    void *_for_gdb {};
+#endif
+};
+
 // External structured callbacks support.
 // See io_uring_exec_operation.h and io_uring_exec_sender.h for more details.
-struct io_uring_exec_operation_base: detail::immovable, intrusive_node {
+struct io_uring_exec_operation_base: detail::immovable, intrusive_node_with_meta {
     using result_t = decltype(std::declval<io_uring_cqe>().res);
     using _self_t = io_uring_exec_operation_base;
     using vtable = detail::make_vtable<
@@ -54,6 +63,24 @@ struct io_uring_exec_operation_base: detail::immovable, intrusive_node {
                     detail::add_restart_to_vtable <void(_self_t*)>>;
     constexpr io_uring_exec_operation_base(vtable vtab) noexcept: vtab(vtab) {}
     vtable vtab;
+    // We might need a bidirectional intrusive node for early stopping support.
+    // However, this feature is rarely used in practice.
+    // We can use hashmap instead to avoid wasting footprint for every object's memory layout.
+};
+
+using intrusive_operation_queue = detail::intrusive_queue<
+                                    io_uring_exec_operation_base,
+                                    &io_uring_exec_operation_base::_i_m_next>;
+
+struct intrusive_operation_map {
+    auto& operator[](size_t index) noexcept { return map[index]; }
+    auto& operator[](io_uring_exec_operation_base *op) noexcept {
+        // operations are stable in address.
+        auto index = std::bit_cast<uintptr_t>(op) % N_way_buckets_in_stopping;
+        return map[index];
+    }
+    inline constexpr static size_t N_way_buckets_in_stopping = 16;
+    std::array<intrusive_operation_queue, N_way_buckets_in_stopping> map;
 };
 
 ////////////////////////////////////////////////////////////////////// stdexec scheduler template
@@ -151,20 +178,19 @@ public:
     void add_inflight() noexcept { _inflight++; }
     void remove_inflight() noexcept { _inflight--; }
 
-    inline constexpr static size_t N_way_buckets_in_stopping = 16;
-    using intrusive_operation_queue = detail::intrusive_queue<
-                                        io_uring_exec_operation_base,
-                                       &io_uring_exec_operation_base::_i_next>;
-    using intrusive_operation_map = std::array<intrusive_operation_queue, N_way_buckets_in_stopping>;
+    decltype(auto) get_stopping_queue(io_uring_exec_operation_base *op) noexcept {
+        return _stopping_map[op];
+    }
 
+// For runloop.
+private:
     decltype(auto) get_stopping_queue(size_t index) noexcept {
         return _stopping_map[index];
     }
 
-    decltype(auto) get_stopping_queue(io_uring_exec_operation_base *op) noexcept
-    {
-        auto index = std::bit_cast<uintptr_t>(op) % N_way_buckets_in_stopping;
-        return get_stopping_queue(index);
+    decltype(auto) get_stopping_queue_robin(size_t index) noexcept {
+        constexpr auto N = intrusive_operation_map::N_way_buckets_in_stopping;
+        return _stopping_map[index % N];
     }
 
 // Hidden friends.

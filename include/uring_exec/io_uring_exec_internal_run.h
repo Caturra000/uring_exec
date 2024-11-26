@@ -47,7 +47,7 @@ struct io_uring_exec_run {
         bool detached {false};          // Ignore stop requests from `io_uring_exec`.
         bool progress {false};          // run() returns run_progress_info.
         bool no_delay {false};          // Complete I/O as fast as possible.
-        bool can_stop {true};           // in-flight operations can stop early.
+        bool block_io {false};          // in-flight operations cannot be interrupted by a stop request.
 
         bool transfer {false};          // For stopeed local context. Just a tricky restart.
         bool terminal {false};          // For stopped remote context. Cancel All.
@@ -194,22 +194,6 @@ struct io_uring_exec_run {
                 }
             }
 
-            if constexpr (policy.can_stop) {
-                constexpr auto N = std::decay_t<decltype(local)>::N_way_buckets_in_stopping;
-                auto &q = local.get_stopping_queue(step % N);
-                auto op = q.move_all();
-                for(; op; op = q.next(op)) {
-                    auto sqe = io_uring_get_sqe(&local);
-                    if(!sqe) break;
-                    io_uring_sqe_set_data(sqe, &noop);
-                    io_uring_prep_cancel(sqe, op, {});
-                    q.clear(op);
-                    local.add_inflight();
-                }
-                // Retry in the next time.
-                if(op) q.push_all(op, [](auto node) { return node; });
-            }
-
             if constexpr (policy.iodone) {
                 std::array<io_uring_cqe*, policy.iodone_batch> cqes;
                 auto produce_some = [&] {
@@ -248,6 +232,25 @@ struct io_uring_exec_run {
                     done += some;
                     local._inflight -= some;
                     if(greedy(some)) break;
+                }
+            }
+
+            // Not accounted in progress info.
+            if constexpr (not policy.block_io) {
+                // No need to traverse the map.
+                auto &q = local.get_stopping_queue_robin(step);
+                // No need to use `safe_for_each`.
+                for(auto op = q.move_all(); op;) {
+                    auto sqe = io_uring_get_sqe(&local);
+                    // `uring` is currently full. Retry in the next round.
+                    if(!sqe) [[unlikely]] {
+                        q.push_all(op, [](auto node) { return node; });
+                        break;
+                    }
+                    io_uring_sqe_set_data(sqe, &noop);
+                    io_uring_prep_cancel(sqe, op, {});
+                    local.add_inflight();
+                    q.clear(std::exchange(op, q.next(op)));
                 }
             }
 
