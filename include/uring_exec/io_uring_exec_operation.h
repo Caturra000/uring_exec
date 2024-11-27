@@ -57,9 +57,7 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
             } else {
                 io_uring_sqe_set_data(sqe, static_cast<op_base*>(this));
                 std::apply(F, std::tuple_cat(std::tuple(sqe), std::move(args)));
-                auto stop_token = stdexec::get_stop_token(stdexec::get_env(receiver));
-                local_scheduler = local.get_scheduler();
-                stop_callback.emplace(std::move(stop_token), early_stopping{this});
+                install_stoppable_callback(local);
             }
         } else {
             // The SQ ring is currently full.
@@ -98,19 +96,28 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
         return false;
     }
 
-    // Called by the local thread.
-    void filter_stopping_self() noexcept {
-        auto &q = local_scheduler.context->get_stopping_queue(this);
-        auto op = q.move_all();
-        if(!op) return;
-        using operation_base = io_uring_exec::operation_base;
-        auto self = static_cast<operation_base*>(this);
-        auto next = q.next(self);
-        q.push_all(op, [self](auto node) { return node && node != self; });
-        if(next) q.push_all(next, [](auto node) { return node; });
+    void install_stoppable_callback(auto &local) noexcept {
+        if constexpr (not stdexec::unstoppable_token<stop_token_type>) {
+            local_scheduler = local.get_scheduler();
+            auto stop_token = stdexec::get_stop_token(stdexec::get_env(receiver));
+            stop_callback.emplace(std::move(stop_token), cancellation{this});
+        }
     }
 
-    struct early_stopping {
+    // Called by the local thread.
+    void uninstall_stoppable_callback() noexcept {
+        if constexpr (not stdexec::unstoppable_token<stop_token_type>) {
+            stop_callback.reset();
+            auto &q = local_scheduler.context->get_stopping_queue(this);
+            auto op = q.move_all();
+            if(!op) return;
+            // See the comment in `io_uring_exec_operation_base`.
+            q.push_all(op, [this](auto node) { return node && node != this; });
+            q.push_all(q.next(this), [](auto node) { return node; });
+        }
+    }
+
+    struct cancellation {
         // May be called by the requesting thread.
         // So we need an atomic operation.
         void operator()() noexcept {
@@ -123,15 +130,14 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
     };
 
     // For stdexec.
-    using stop_callback_type = typename stop_token_type::template callback_type<early_stopping>;
+    using stop_callback_type = typename stop_token_type::template callback_type<cancellation>;
 
     inline constexpr static vtable this_vtable {
         {.complete = [](auto *_self, result_t cqe_res) noexcept {
             auto self = static_cast<io_uring_exec_operation*>(_self);
             auto &receiver = self->receiver;
 
-            self->stop_callback.reset();
-            self->filter_stopping_self();
+            self->uninstall_stoppable_callback();
 
             constexpr auto is_timer = [] {
                 // Make GCC happy.
@@ -163,15 +169,13 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
 
         {.cancel = [](auto *_self) noexcept {
             auto self = static_cast<io_uring_exec_operation*>(_self);
-            self->stop_callback.reset();
-            self->filter_stopping_self();
+            self->uninstall_stoppable_callback();
             stdexec::set_stopped(std::move(self->receiver));
         }},
 
         {.restart = [](auto *_self) noexcept {
             auto self = static_cast<io_uring_exec_operation*>(_self);
-            self->stop_callback.reset();
-            self->filter_stopping_self();
+            self->uninstall_stoppable_callback();
             self->async_restart();
         }}
     };
