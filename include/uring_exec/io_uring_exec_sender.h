@@ -31,71 +31,102 @@ struct io_uring_exec_sender {
     std::tuple<Args...> args;
 };
 
-template <auto io_uring_prep_invocable, typename ...Args>
-inline stdexec::sender_of<
-    stdexec::set_value_t(io_uring_exec::operation_base::result_t /* cqe->res */),
-    stdexec::set_error_t(std::exception_ptr)>
-auto make_uring_sender(std::in_place_t,
-                       io_uring_exec::scheduler s, std::tuple<Args...> &&t_args) noexcept {
-    return io_uring_exec_sender<io_uring_prep_invocable, Args...>{s.context, std::move(t_args)};
-}
+////////////////////////////////////////////////////////////////////// Make uring sender
 
-// A sender factory.
+// Make it easier to create user-defined senders.
 template <auto io_uring_prep_invocable>
-inline auto make_uring_sender(io_uring_exec::scheduler s, auto &&...args) noexcept {
-    return make_uring_sender<io_uring_prep_invocable>
-        (std::in_place, s, std::tuple(static_cast<decltype(args)&&>(args)...));
-}
+class make_uring_sender_t {
+public:
+    constexpr
+    stdexec::sender_of<
+        stdexec::set_value_t(io_uring_exec::operation_base::result_t /* cqe->res */),
+        stdexec::set_error_t(std::exception_ptr)>
+    auto operator()(io_uring_exec::scheduler s, auto &&...args) const noexcept {
+        return operator()(std::in_place, s,
+            // Perfectly match the signature. (Arguments are convertible.)
+            []<typename R, typename ...Ts>(R(io_uring_sqe*, Ts...), auto &&...args) {
+                return std::tuple<Ts...>{static_cast<decltype(args)&&>(args)...};
+            }(io_uring_prep_invocable, static_cast<decltype(args)&&>(args)...));
+    }
+
+private:
+    template <typename ...Args>
+    constexpr auto operator()(std::in_place_t,
+                              io_uring_exec::scheduler s, std::tuple<Args...> &&t_args)
+    const noexcept -> io_uring_exec_sender<io_uring_prep_invocable, Args...> {
+        return {s.context, std::move(t_args)};
+    }
+};
+
+// A [sender factory] factory for `io_uring_prep_*` asynchronous functions.
+//
+// These asynchronous senders have similar interfaces to `io_uring_prep_*` functions.
+// That is, io_uring_prep_*(sqe, ...) -> async_*(scheduler, ...)
+//
+// Usage example:
+//     auto async_close = make_uring_sender_v<io_uring_prep_close>;
+//     stdexec::sender auto s = async_close(scheduler, fd);
+template <auto io_uring_prep_invocable>
+inline constexpr auto make_uring_sender_v = make_uring_sender_t<io_uring_prep_invocable>{};
+
+////////////////////////////////////////////////////////////////////// Asynchronous senders
+
+inline constexpr auto async_oepnat      = make_uring_sender_v<io_uring_prep_openat>;
+inline constexpr auto async_readv       = make_uring_sender_v<io_uring_prep_readv>;
+inline constexpr auto async_readv2      = make_uring_sender_v<io_uring_prep_readv2>;
+inline constexpr auto async_writev      = make_uring_sender_v<io_uring_prep_writev>;
+inline constexpr auto async_writev2     = make_uring_sender_v<io_uring_prep_writev2>;
+inline constexpr auto async_close       = make_uring_sender_v<io_uring_prep_close>;
+inline constexpr auto async_socket      = make_uring_sender_v<io_uring_prep_socket>;
+inline constexpr auto async_bind        = make_uring_sender_v<io_uring_prep_bind>;
+inline constexpr auto async_accept      = make_uring_sender_v<io_uring_prep_accept>;
+inline constexpr auto async_connect     = make_uring_sender_v<io_uring_prep_connect>;
+inline constexpr auto async_send        = make_uring_sender_v<io_uring_prep_send>;
+inline constexpr auto async_recv        = make_uring_sender_v<io_uring_prep_recv>;
+inline constexpr auto async_sendmsg     = make_uring_sender_v<io_uring_prep_sendmsg>;
+inline constexpr auto async_recvmsg     = make_uring_sender_v<io_uring_prep_recvmsg>;
+inline constexpr auto async_shutdown    = make_uring_sender_v<io_uring_prep_shutdown>;
+inline constexpr auto async_poll_add    = make_uring_sender_v<io_uring_prep_poll_add>;
+inline constexpr auto async_poll_update = make_uring_sender_v<io_uring_prep_poll_update>;
+inline constexpr auto async_poll_remove = make_uring_sender_v<io_uring_prep_poll_remove>;
+inline constexpr auto async_timeout     = make_uring_sender_v<io_uring_prep_timeout>;
+inline constexpr auto async_futex_wait  = make_uring_sender_v<io_uring_prep_futex_wait>;
+inline constexpr auto async_futex_wake  = make_uring_sender_v<io_uring_prep_futex_wake>;
+
+// Debug only. (For example, to verify the correctness of concurrency.)
+// The return value makes no sense.
+inline constexpr auto async_nop         = make_uring_sender_v<io_uring_prep_nop>;
+
+// `async_open` needs a new version of liburing: https://github.com/axboe/liburing/issues/1100
+// inline constexpr auto async_open        = make_uring_sender_v<io_uring_prep_open>;
 
 // On  files  that  support seeking, if the `offset` is set to -1, the read operation commences at the file offset,
 // and the file offset is incremented by the number of bytes read. See read(2) for more details. Note that for an
 // async API, reading and updating the current file offset may result in unpredictable behavior, unless access to
 // the file is serialized. It is **not encouraged** to use this feature, if it's possible to provide the  desired  IO
 // offset from the application or library.
-inline stdexec::sender
+inline constexpr stdexec::sender
 auto async_read(io_uring_exec::scheduler s, int fd, void *buf, size_t n, uint64_t offset = 0) noexcept {
-    return make_uring_sender<io_uring_prep_read>(s, fd, buf, n, offset);
+    return make_uring_sender_v<io_uring_prep_read>(s, fd, buf, n, offset);
 }
 
-inline stdexec::sender
+inline constexpr stdexec::sender
 auto async_write(io_uring_exec::scheduler s, int fd, const void *buf, size_t n, uint64_t offset = 0) noexcept {
-    return make_uring_sender<io_uring_prep_write>(s, fd, buf, n, offset);
-}
-
-inline stdexec::sender
-auto async_close(io_uring_exec::scheduler s, int fd) noexcept {
-    return make_uring_sender<io_uring_prep_close>(s, fd);
-}
-
-inline stdexec::sender
-auto async_accept(io_uring_exec::scheduler s,int fd, int flags) noexcept {
-    return make_uring_sender<io_uring_prep_accept>(s, fd, nullptr, nullptr, flags);
+    return make_uring_sender_v<io_uring_prep_write>(s, fd, buf, n, offset);
 }
 
 inline stdexec::sender
 auto async_wait(io_uring_exec::scheduler s, std::chrono::steady_clock::duration duration) noexcept {
     using namespace std::chrono;
-    auto duration_s = duration_cast<seconds>(duration);
-    auto duration_ns = duration_cast<nanoseconds>(duration - duration_s);
-    return
-        // `ts` needs safe lifetime within an asynchronous scope.
-        stdexec::just(__kernel_timespec {
-            .tv_sec = duration_s.count(),
-            .tv_nsec = duration_ns.count()
-        })
-      | stdexec::let_value([s](auto &&ts) {
-            return make_uring_sender<io_uring_prep_timeout>(std::in_place, s,
-                []<typename R, typename ...Ts>(R(io_uring_sqe*, Ts...), auto &&...args) {
-                    return std::tuple<Ts...>{static_cast<decltype(args)&&>(args)...};
-                }(io_uring_prep_timeout, &ts, 0, 0));
-        });
-}
-
-// Debug only. (For example, to verify the correctness of concurrency.)
-// The return value makes no sense at all.
-inline stdexec::sender
-auto async_nop(io_uring_exec::scheduler s, ...) noexcept {
-    return make_uring_sender<io_uring_prep_nop>(s);
+    auto make_ts_from = [](auto duration) -> struct __kernel_timespec {
+        auto duration_s = duration_cast<seconds>(duration);
+        auto duration_ns = duration_cast<nanoseconds>(duration - duration_s);
+        return {.tv_sec = duration_s.count(), .tv_nsec = duration_ns.count()};
+    };
+    // `ts` needs safe lifetime within an asynchronous scope.
+    return stdexec::let_value(stdexec::just(make_ts_from(duration)), [s](auto &&ts) {
+        return make_uring_sender_v<io_uring_prep_timeout>(s, &ts, 0, 0);
+    });
 }
 
 } // namespace uring_exec

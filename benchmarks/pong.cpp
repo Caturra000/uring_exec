@@ -41,7 +41,7 @@ auto server(io_uring_exec::scheduler scheduler, exec::async_scope &scope,
         stdexec::just()
       | stdexec::let_value([=, &scope] {
             return
-                uring_exec::async_accept(scheduler, server_fd, {})
+                uring_exec::async_accept(scheduler, server_fd, nullptr, nullptr, 0)
               | stdexec::then([=, &scope](int client_fd) mutable {
                     scope.spawn(pong(scheduler, client_fd, blocksize));
                 })

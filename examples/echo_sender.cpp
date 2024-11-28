@@ -42,7 +42,7 @@ auto echo(io_uring_exec::scheduler scheduler, int client_fd) {
 stdexec::sender
 auto server(io_uring_exec::scheduler scheduler, int server_fd, exec::async_scope &scope) {
     return
-        uring_exec::async_accept(scheduler, server_fd, {})
+        uring_exec::async_accept(scheduler, server_fd, nullptr, nullptr, 0)
       | stdexec::let_value([=, &scope](int client_fd) {
             scope.spawn(echo(scheduler, client_fd));
             return stdexec::just(false);

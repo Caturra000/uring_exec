@@ -13,14 +13,6 @@
 using uring_exec::io_uring_exec;
 constexpr auto noop = [](auto &&...) {};
 
-auto my_async_socket(io_uring_exec::scheduler s, auto ...args) {
-    return uring_exec::make_uring_sender<io_uring_prep_socket>(s, args...);
-}
-
-auto my_async_connect(io_uring_exec::scheduler s, auto ...args) {
-    return uring_exec::make_uring_sender<io_uring_prep_connect>(s, args...);
-}
-
 stdexec::sender
 auto ping(io_uring_exec::scheduler scheduler,
           int client_fd, int blocksize) {
@@ -65,10 +57,10 @@ auto client(io_uring_exec::scheduler scheduler,
     return
         stdexec::just()
       | stdexec::let_value([=] {
-            return my_async_socket(scheduler, AF_INET, SOCK_STREAM, IPPROTO_TCP, 0);
+            return uring_exec::async_socket(scheduler, AF_INET, SOCK_STREAM, IPPROTO_TCP, 0);
         })
       | stdexec::let_value([=, addr = make_addr(endpoint)](int client_fd) {
-            return my_async_connect(scheduler, client_fd, &addr, sizeof addr)
+            return uring_exec::async_connect(scheduler, client_fd, &addr, sizeof addr)
                  | stdexec::let_value([=](auto&&) {
                        return stdexec::just(client_fd, size_t{}, size_t{});
                    });
