@@ -48,6 +48,7 @@ struct io_uring_exec_run {
         bool progress {false};          // run() returns run_progress_info.
         bool no_delay {false};          // Complete I/O as fast as possible.
         bool blocking {false};          // in-flight operations cannot be interrupted by a stop request.
+        bool locality {false};          // Queue tasks in FILO order.
 
         bool transfer {false};          // For stopeed local context. Just a tricky restart.
         bool terminal {false};          // For stopped remote context. Cancel All.
@@ -154,6 +155,9 @@ struct io_uring_exec_run {
                 auto launch = [&launched](auto &intrusive_queue) {
                     auto &q = intrusive_queue;
                     auto op = q.move_all();
+                    if constexpr (not policy.locality) {
+                        op = q.make_fifo(op);
+                    }
                     // NOTE:
                     // We need to get the `next(op)` first.
                     // Because `op` will be destroyed after complete/cancel().

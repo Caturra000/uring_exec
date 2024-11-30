@@ -68,6 +68,21 @@ struct intrusive_queue<T, Next> {
         node->*Next = nullptr;
     }
 
+    inline static T* make_fifo(Node *node) noexcept {
+        if(node == nullptr) return nullptr;
+        Node sentinel {};
+        sentinel.*Next = node;
+        auto prev = &sentinel, cur = node;
+        while(cur) {
+            auto next = cur->*Next;
+            cur->*Next = prev;
+            prev = cur;
+            cur = next;
+        }
+        node->*Next = nullptr;
+        return static_cast<T*>(prev);
+    }
+
 private:
     inline constexpr static auto read_mo = std::memory_order::relaxed;
     inline constexpr static auto write_mo = std::memory_order::acq_rel;
