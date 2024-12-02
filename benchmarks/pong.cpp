@@ -60,9 +60,7 @@ int main(int argc, char *argv[]) {
     auto atoies = [&](auto ...idxes) { return std::tuple{atoi(argv[idxes])...}; };
     auto [port, threads, blocksize, sessions] = atoies(1, 2, 3, 4);
 
-    struct sigaction sa {};
-    sa.sa_handler = SIG_IGN;
-    sigaction(SIGPIPE, &sa, nullptr);
+    auto sb = uring_exec::signal_blocker<uring_exec::sigmask_exclusive>(SIGINT);
     auto server_fd = uring_exec::make_server({.port=port});
     io_uring_exec uring({.uring_entries=512});
     exec::async_scope scope;

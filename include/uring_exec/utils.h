@@ -3,6 +3,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <cstdlib>
 #include <memory>
 #include <string_view>
@@ -10,6 +11,7 @@
 #include <bit>
 #include <array>
 #include <atomic>
+#include <ranges>
 namespace uring_exec {
 inline namespace utils {
 
@@ -94,6 +96,56 @@ inline int make_server(make_server_option_t option) {
     listen(socket_fd, option.backlog) | nofail("listen");
 
     return socket_fd;
+}
+
+// For signal_blocker(). Inclusive is default mode.
+// Example:
+//     // Block all signals except SIGINT and SIGUSR1.
+//     auto sb = signal_blocker<sigmask_exclusive>(std::array {SIGINT, SIGUSR1});
+struct sigmask_exclusive_t: std::true_type {};
+struct sigmask_inclusive_t: std::false_type {};
+inline constexpr auto sigmask_exclusive = sigmask_exclusive_t{};
+inline constexpr auto sigmask_inclusive = sigmask_inclusive_t{};
+
+// Block all/some signals in ctor.
+// Restore previous signals in dtor (or .reset()).
+// Examples:
+//     // Block all signals.
+//     auto sb = signal_blocker();
+//
+//     // Block a single SIGINT signal.
+//     auto sb = signal_blocker(SIGINT);
+//
+//     // Block SIGINT and SIGUSR1 singls. (std::vector<int> or other ranges are also acceptable.)
+//     auto sb = signal_blocker(std::array {SIGINT, SIGUSR1});
+//
+//     // Block all signals except SIGINT and SIGUSR1.
+//     auto sb = signal_blocker<sigmask_exclusive>(std::array {SIGINT, SIGUSR1});
+template <auto exclusive = std::false_type { /* using underlying type to clarify default behavior. */ },
+          typename Container = std::array<int, 0>> // Can be a range, or a single signal value type.
+inline auto signal_blocker(Container &&signals = {}) {
+    /// ctor
+    sigset_t new_mask, old_mask;
+    auto empty_signals_f = [&] {
+        if constexpr (std::ranges::range<Container>) return std::size(signals) == 0;
+        else return false;
+    };
+    bool init_fill = empty_signals_f() || exclusive;
+    (init_fill ? sigfillset : sigemptyset)(&new_mask);
+    auto modify = (exclusive ? sigdelset : sigaddset);
+    if constexpr (std::ranges::range<Container>) {
+        for(auto signal : signals) modify(&new_mask, signal);
+    } else {
+        modify(&new_mask, signals);
+    }
+    sigemptyset(&old_mask);
+    // The use of sigprocmask() is unspecified in a multithreaded process; see pthread_sigmask(3).
+    pthread_sigmask(SIG_BLOCK, &new_mask, &old_mask);
+
+    /// dtor
+    return defer([old_mask] {
+        pthread_sigmask(SIG_SETMASK, &old_mask, 0);
+    });
 }
 
 } // namespace utils

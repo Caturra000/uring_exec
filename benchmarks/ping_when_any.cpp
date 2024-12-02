@@ -104,9 +104,7 @@ int main(int argc, char *argv[]) {
     auto [port, threads, blocksize, sessions, timeout] = atoies(1, 2, 3, 4, 5);
     assert(timeout >= 1);
 
-    struct sigaction sa {};
-    sa.sa_handler = SIG_IGN;
-    sigaction(SIGPIPE, &sa, nullptr);
+    auto sb = uring_exec::signal_blocker<uring_exec::sigmask_exclusive>(SIGINT);
     io_uring_exec uring({.uring_entries=512});
 
     std::vector<std::jthread> thread_pool(threads);

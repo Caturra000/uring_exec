@@ -1,12 +1,16 @@
 #pragma once
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/signalfd.h>
 #include <netinet/in.h>
+#include <signal.h>
+#include <poll.h>
 #include <cstring>
 #include <chrono>
 #include <mutex>
 #include <thread>
 #include <tuple>
+#include <ranges>
 #include <liburing.h>
 #include <stdexec/execution.hpp>
 #include "io_uring_exec.h"
@@ -127,6 +131,39 @@ auto async_wait(io_uring_exec::scheduler s, std::chrono::steady_clock::duration 
     return stdexec::let_value(stdexec::just(make_ts_from(duration)), [s](auto &&ts) {
         return make_uring_sender_v<io_uring_prep_timeout>(s, &ts, 0, 0);
     });
+}
+
+inline stdexec::sender
+auto async_sigwait(io_uring_exec::scheduler scheduler, std::ranges::range auto signals) noexcept {
+    struct raii_fd {
+        int fd;
+        explicit raii_fd(int fd) noexcept: fd(fd) {}
+        raii_fd(raii_fd &&rhs) noexcept: fd(rhs.reset()) {}
+        ~raii_fd() { if(fd > -1) close(fd); }
+        int reset() noexcept { return std::exchange(fd, -1); }
+    };
+    auto make_signalfd_from = [](auto signals) {
+        sigset_t mask;
+        sigemptyset(&mask);
+        for(auto signal : signals) sigaddset(&mask, signal);
+        pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+        return raii_fd{signalfd(-1, &mask, 0)};
+    };
+    return
+        stdexec::let_value(stdexec::just(make_signalfd_from(std::move(signals))), [=](auto &fd) {
+            // Propagate to upon_error/let_error.
+            if(fd.fd < 0) throw std::system_error(errno, std::system_category());
+            return
+                stdexec::let_value(stdexec::just(fd.fd), [=](auto fd) {
+                    return async_poll_add(scheduler, fd, POLLIN);
+                })
+              | stdexec::let_value([=](auto events) {
+                    // FIXME: POLLERR differs from cqe_res < 0. But what is the undocumented difference?
+                    if(!(events & POLLIN)) throw std::system_error(errno, std::system_category());
+                    // TODO: use async_read() instead of async_poll() and return the specific signal type.
+                    return stdexec::just(events);
+                });
+        });
 }
 
 } // namespace uring_exec
