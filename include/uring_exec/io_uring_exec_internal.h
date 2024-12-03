@@ -5,6 +5,7 @@
 #include <thread>
 #include <tuple>
 #include <array>
+#include <random>
 #include <liburing.h>
 #include <stdexec/execution.hpp>
 #include <exec/async_scope.hpp>
@@ -14,12 +15,59 @@
 namespace uring_exec {
 namespace internal {
 
-////////////////////////////////////////////////////////////////////// Task support
+////////////////////////////////////////////////////////////////////// Containers
 
 // Avoid requiring a default constructor in derived classes.
 struct intrusive_node {
     intrusive_node *_i_next {nullptr};
 };
+
+// Simple fixed-size map to reduce thread contention.
+template <typename Bucket, size_t Fixed_bucket_size = 16>
+struct trivial_intrusive_map: detail::immovable {
+    using bucket_type = Bucket;
+    using element_type = typename Bucket::element_type;
+
+    auto& operator[](size_t index) noexcept { return map[index]; }
+    auto& operator[](element_type *element) noexcept {
+        // Elements have stable addresses and can locate their queue using their own address.
+        static_assert(
+                !std::is_move_constructible_v<element_type> &&
+                !std::is_move_assignable_v<element_type>);
+        auto index = std::bit_cast<uintptr_t>(element) % N_way_concurrency;
+        return map[index];
+    }
+
+    struct robin_access_pattern {
+        trivial_intrusive_map &self;
+        auto& operator[](size_t index) const noexcept { return self[index % Fixed_bucket_size]; };
+    };
+
+    struct random_access_pattern {
+        trivial_intrusive_map &self;
+        auto& operator[](size_t) const noexcept { return self[mt_random()]; };
+
+        // Random device may perform an open() syscall and fd won't be closed until dtor is called.
+        // Therefore, we don't cache it.
+        inline static thread_local auto mt_random =
+            [algo = std::mt19937_64{std::random_device{}()},
+             dist = std::uniform_int_distribution<size_t>{0, Fixed_bucket_size - 1}]() mutable
+        {
+            static_assert(Fixed_bucket_size > 0, "Zero bucket design is not allowed.");
+            return dist(algo);
+        };
+    };
+
+    auto robin_access() noexcept -> robin_access_pattern { return {*this}; };
+    auto random_access() noexcept -> random_access_pattern { return {*this}; }
+
+    inline constexpr static size_t N_way_concurrency = Fixed_bucket_size;
+
+private:
+    std::array<bucket_type, N_way_concurrency> map;
+};
+
+////////////////////////////////////////////////////////////////////// Task support
 
 // All the tasks are asynchronous.
 // The `io_uring_exec_task` struct is queued by a user-space intrusive queue.
@@ -35,6 +83,9 @@ struct io_uring_exec_task: detail::immovable, intrusive_node {
 
 // Atomic version.
 using intrusive_task_queue = detail::intrusive_queue<io_uring_exec_task, &io_uring_exec_task::_i_next>;
+
+// More concurrency-friendly.
+using intrusive_task_map = trivial_intrusive_map<intrusive_task_queue>;
 
 // `internal::start_operation` is a customization point for `trivial_scheduler` template.
 inline void start_operation(intrusive_task_queue *self, auto *operation) noexcept {
@@ -72,16 +123,7 @@ using intrusive_operation_queue = detail::intrusive_queue<
                                     io_uring_exec_operation_base,
                                     &io_uring_exec_operation_base::_i_m_next>;
 
-struct intrusive_operation_map {
-    auto& operator[](size_t index) noexcept { return map[index]; }
-    auto& operator[](io_uring_exec_operation_base *op) noexcept {
-        // operations are stable in address.
-        auto index = std::bit_cast<uintptr_t>(op) % N_way_buckets_in_stopping;
-        return map[index];
-    }
-    inline constexpr static size_t N_way_buckets_in_stopping = 16;
-    std::array<intrusive_operation_queue, N_way_buckets_in_stopping> map;
-};
+using intrusive_operation_map = trivial_intrusive_map<intrusive_operation_queue>;
 
 ////////////////////////////////////////////////////////////////////// stdexec scheduler template
 
@@ -182,17 +224,6 @@ public:
         return _stopping_map[op];
     }
 
-// For runloop.
-private:
-    decltype(auto) get_stopping_queue(size_t index) noexcept {
-        return _stopping_map[index];
-    }
-
-    decltype(auto) get_stopping_queue_robin(size_t index) noexcept {
-        constexpr auto N = intrusive_operation_map::N_way_buckets_in_stopping;
-        return _stopping_map[index % N];
-    }
-
 // Hidden friends.
 private:
     friend void start_operation(io_uring_exec_local *self, auto *operation) noexcept {
@@ -264,6 +295,7 @@ public:
     using task = internal::io_uring_exec_task;
     using operation_base = internal::io_uring_exec_operation_base;
     using task_queue = internal::intrusive_task_queue;
+    using task_map = internal::intrusive_task_map;
 
     // Required by stdexec.
     // Most of its functions are invoked by stdexec.
@@ -314,12 +346,15 @@ private:
     friend class io_uring_exec_local;
 
     friend void start_operation(io_uring_exec *self, auto *operation) noexcept {
-        self->_immediate_queue.push(operation);
+        // Break self-indexing rule as we don't need to find map bucket by operation itself.
+        auto index = self->_store_balance.fetch_add(1, std::memory_order::relaxed);
+        self->_immediate_map.robin_access()[index].push(operation);
     }
 
 private:
     underlying_io_uring::constructor_parameters _uring_params;
-    intrusive_task_queue _immediate_queue;
+    intrusive_task_map _immediate_map;
+    alignas(64) std::atomic<size_t> _store_balance {};
     alignas(64) std::atomic<size_t> _running_local {};
     exec::async_scope _transfer_scope;
     std::thread::id _thread_id;

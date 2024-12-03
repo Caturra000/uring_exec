@@ -47,6 +47,7 @@ struct io_uring_exec_run {
         bool detached {false};          // Ignore stop requests from `io_uring_exec`.
         bool progress {false};          // run() returns run_progress_info.
         bool no_delay {false};          // Complete I/O as fast as possible.
+        bool pull_all {false};          // (WIP) Issue I/O as fast as possible.
         bool blocking {false};          // in-flight operations cannot be interrupted by a stop request.
         bool locality {false};          // Queue tasks in FILO order.
 
@@ -149,7 +150,8 @@ struct io_uring_exec_run {
         //     };
 
         // Return `step` as a performance hint.
-        for(auto step : std::views::iota(1 /* 0 means no-op. */)) {
+        // 0 means no-op.
+        for(size_t step = 1; ; _walltime_step++, step++) {
             if constexpr (policy.launch) {
                 // TODO: Lockfree wrapper for auto std::move(q) -> op*.
                 auto launch = [&launched](auto &intrusive_queue) {
@@ -183,9 +185,11 @@ struct io_uring_exec_run {
                 // No need to pull remote tasks.
                 if constexpr (policy.transfer) {
                     launch(local._attached_queue);
+                // Pull any two remote task queues.
                 } else {
                     launch(local._attached_queue);
-                    launch(remote._immediate_queue);
+                    launch(remote._immediate_map.robin_access()[_walltime_step]);
+                    launch(remote._immediate_map.random_access()[_walltime_step]);
                 }
             }
 
@@ -242,7 +246,7 @@ struct io_uring_exec_run {
             // Not accounted in progress info.
             if constexpr (not policy.blocking) {
                 // No need to traverse the map.
-                auto &q = local.get_stopping_queue_robin(step);
+                auto &q = local._stopping_map.robin_access()[_walltime_step];
                 // No need to use `safe_for_each`.
                 for(auto op = q.move_all(); op;) {
                     auto sqe = io_uring_get_sqe(&local);
@@ -353,6 +357,7 @@ protected:
 private:
     // Avoid atomic stop_requested() operation.
     bool _runloop_must_have_stopped {false};
+    size_t _walltime_step {std::hash<std::thread::id>{}(std::this_thread::get_id())};
 
     constexpr auto that() noexcept -> Exec_crtp_derived* {
         return static_cast<Exec_crtp_derived*>(this);
