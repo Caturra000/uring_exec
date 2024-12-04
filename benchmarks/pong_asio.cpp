@@ -42,8 +42,10 @@ int main(int argc, char *argv[]) {
     }
     auto atoies = [&](auto ...idxes) { return std::tuple{atoi(argv[idxes])...}; };
     auto [port, thread_count, block_size, session_count] = atoies(1, 2, 3, 4);
-    auto sb = asio::detail::signal_blocker();
+    // auto sb = asio::detail::signal_blocker();
     asio::io_context ioc;
+    asio::signal_set s(ioc, SIGINT);
+    s.async_wait([](auto, auto) { std::quick_exit(0); });
     tcp::acceptor acceptor(ioc, {tcp::v4(), static_cast<asio::ip::port_type>(port)});
     asio::co_spawn(
         ioc,

@@ -1,6 +1,8 @@
 import subprocess
 import time
 import argparse
+import signal
+import os
 
 parser = argparse.ArgumentParser(description="Run ping-pong tests with different servers.")
 parser.add_argument("--server", choices=["uring_exec", "asio"], default="uring_exec")
@@ -20,8 +22,8 @@ port = "8848"
 print("Server:", args.server)
 print("Client:", args.client)
 print("==========")
-for thread in [2, 4, 8]:
-    for session in [10, 100, 1000]:
+for thread in [1, 2, 4, 8]:
+    for session in [10, 100, 1000, 10000, 100000]:
         print(">> thread:", thread, "session:", session)
         time.sleep(1)
         common_args = [port, str(thread), blocksize, str(session)]
@@ -33,9 +35,13 @@ for thread in [2, 4, 8]:
             client_cmd = ["./build/" + client_name]
         server_cmd += common_args
         client_cmd += common_args + [timeout]
-        server_handle = subprocess.Popen(server_cmd)
+        # Unfortunately, `xmake run` will fork two different processes for server.
+        # We need a group to kill it/them.
+        server_handle = subprocess.Popen(server_cmd, process_group=0)
         time.sleep(.256) # Start first.
         client_handle = subprocess.Popen(client_cmd)
-        client_handle.wait()
+        time.sleep(int(timeout))
+        os.killpg(server_handle.pid, signal.SIGINT)
         server_handle.wait()
+        client_handle.wait()
         print("==========")
