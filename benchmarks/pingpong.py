@@ -3,6 +3,7 @@ import time
 import argparse
 import signal
 import os
+import sys
 
 parser = argparse.ArgumentParser(description="Run ping-pong tests with different servers.")
 parser.add_argument("--server", choices=["uring_exec", "asio"], default="uring_exec")
@@ -18,6 +19,14 @@ use_xmake = (args.xmake == "y")
 blocksize = "16384"
 timeout = "10" # s
 port = "8848"
+
+# By default, it sends SIGTERM which may be ignored by test applications.
+signal.signal(signal.SIGINT, lambda sig, frame: (
+    print("Ctrl+C detected. Sending SIGINT to child processes..."),
+    os.killpg(server_handle.pid, signal.SIGINT) if server_handle else None,
+    os.killpg(client_handle.pid, signal.SIGINT) if client_handle else None,
+    sys.exit(0)
+))
 
 print("Server:", args.server)
 print("Client:", args.client)
@@ -39,7 +48,7 @@ for thread in [1, 2, 4, 8]:
         # We need a group to kill it/them.
         server_handle = subprocess.Popen(server_cmd, process_group=0)
         time.sleep(.256) # Start first.
-        client_handle = subprocess.Popen(client_cmd)
+        client_handle = subprocess.Popen(client_cmd, process_group=0)
         time.sleep(int(timeout))
         os.killpg(server_handle.pid, signal.SIGINT)
         server_handle.wait()
