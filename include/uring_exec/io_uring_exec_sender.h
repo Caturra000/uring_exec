@@ -19,20 +19,23 @@ namespace uring_exec {
 
 template <auto io_uring_prep_invocable, typename ...Args>
 struct io_uring_exec_sender {
-    using sender_concept = stdexec::sender_t;
-    using completion_signatures = stdexec::completion_signatures<
-                                    stdexec::set_value_t(io_uring_exec::operation_base::result_t),
-                                    stdexec::set_error_t(std::exception_ptr),
-                                    stdexec::set_stopped_t()>;
+    struct __t {
+        using __id = io_uring_exec_sender;
+        using sender_concept = stdexec::sender_t;
+        using completion_signatures = stdexec::completion_signatures<
+                                        stdexec::set_value_t(io_uring_exec::operation_base::result_t),
+                                        stdexec::set_error_t(std::exception_ptr),
+                                        stdexec::set_stopped_t()>;
 
-    template <stdexec::receiver Receiver>
-    io_uring_exec_operation<io_uring_prep_invocable, Receiver, Args...>
-    connect(Receiver receiver) noexcept {
-        return {std::move(receiver), uring, std::move(args)};
-    }
+        template <stdexec::receiver Receiver>
+        io_uring_exec_operation<io_uring_prep_invocable, Receiver, Args...>
+        connect(Receiver receiver) noexcept {
+            return {std::move(receiver), uring, std::move(args)};
+        }
 
-    io_uring_exec *uring;
-    std::tuple<Args...> args;
+        io_uring_exec *uring;
+        std::tuple<Args...> args;
+    };
 };
 
 ////////////////////////////////////////////////////////////////////// Make uring sender
@@ -57,7 +60,7 @@ private:
     template <typename ...Args>
     constexpr auto operator()(std::in_place_t,
                               io_uring_exec::scheduler s, std::tuple<Args...> &&t_args)
-    const noexcept -> io_uring_exec_sender<io_uring_prep_invocable, Args...> {
+    const noexcept -> stdexec::__t<io_uring_exec_sender<io_uring_prep_invocable, Args...>> {
         return {s.context, std::move(t_args)};
     }
 };

@@ -164,29 +164,32 @@ struct trivial_scheduler {
         Context *context;
     };
     struct sender {
-        using sender_concept = stdexec::sender_t;
-        using completion_signatures = stdexec::completion_signatures<
-                                        stdexec::set_value_t(),
-                                        stdexec::set_stopped_t()>;
-        struct env {
-            template <typename CPO>
-            auto query(stdexec::get_completion_scheduler_t<CPO>) const noexcept {
-                return trivial_scheduler{context};
+        struct __t {
+            using __id = sender;
+            using sender_concept = stdexec::sender_t;
+            using completion_signatures = stdexec::completion_signatures<
+                                            stdexec::set_value_t(),
+                                            stdexec::set_stopped_t()>;
+            struct env {
+                template <typename CPO>
+                auto query(stdexec::get_completion_scheduler_t<CPO>) const noexcept {
+                    return trivial_scheduler{context};
+                }
+                Context *context;
+            };
+
+            env get_env() const noexcept { return {context}; }
+
+            template <stdexec::receiver Receiver>
+            operation<Receiver> connect(Receiver receiver) noexcept {
+                return {{operation<Receiver>::this_vtable}, std::move(receiver), context};
             }
+
             Context *context;
         };
-
-        env get_env() const noexcept { return {context}; }
-
-        template <stdexec::receiver Receiver>
-        operation<Receiver> connect(Receiver receiver) noexcept {
-            return {{operation<Receiver>::this_vtable}, std::move(receiver), context};
-        }
-
-        Context *context;
     };
     bool operator<=>(const trivial_scheduler &) const=default;
-    sender schedule() const noexcept { return {context}; }
+    auto schedule() const noexcept { return stdexec::__t<sender>{context}; }
 
     Context *context;
 };
