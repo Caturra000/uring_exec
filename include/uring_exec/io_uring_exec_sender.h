@@ -155,13 +155,27 @@ auto async_sigwait(io_uring_exec::scheduler scheduler, std::ranges::range auto s
             if(fd.fd < 0) throw std::system_error(errno, std::system_category());
             return
                 stdexec::let_value(stdexec::just(fd.fd), [=](auto fd) {
+                    // NOTE:
+                    // Since signalfd has no ownership of signal, async_poll_add & async_close are incorrect.
+                    // We must async_read the signal. Otherwise signal will wakeup another signalfd.
                     return async_poll_add(scheduler, fd, POLLIN);
                 })
               | stdexec::let_value([=](auto events) {
                     // FIXME: POLLERR differs from cqe_res < 0. But what is the undocumented difference?
                     if(!(events & POLLIN)) throw std::system_error(errno, std::system_category());
-                    // TODO: use async_read() instead of async_poll() and return the specific signal type.
-                    return stdexec::just(events);
+                    return stdexec::just();
+                })
+              | stdexec::let_value([=, &fd] {
+                    return
+                        stdexec::just(fd.fd, std::array<std::byte, sizeof(signalfd_siginfo)>())
+                      | stdexec::let_value([=](auto fd, auto &buf) {
+                            return
+                                async_read(scheduler, fd, buf.data(), buf.size())
+                              | stdexec::then([&buf](auto) {
+                                    // See `man 2 signalfd` for more details.
+                                    return std::bit_cast<signalfd_siginfo>(buf);
+                                });
+                        });
                 });
         });
 }
