@@ -139,14 +139,15 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
 
             self->uninstall_stoppable_callback();
 
-            constexpr auto is_timer = [] {
-                // Make GCC happy.
-                if constexpr (requires { F == &io_uring_prep_timeout; })
-                    return F == &io_uring_prep_timeout;
-                return false;
-            } ();
-
             // Zero overhead for regular operations.
+            constexpr auto match = [](auto function) consteval {
+                // Make GCC happy.
+                if constexpr (requires { F == function; })
+                    return F == function;
+                return false;
+            };
+
+            constexpr auto is_timer = match(io_uring_prep_timeout);
             if constexpr (is_timer) {
                 auto good = [cqe_res](auto ...errors) { return ((cqe_res == errors) || ...); };
                 // Timed out is not an error.
@@ -154,6 +155,15 @@ struct io_uring_exec_operation: io_uring_exec::operation_base {
                     stdexec::set_value(std::move(receiver), cqe_res);
                     return;
                 }
+            }
+
+            constexpr auto is_zerocopy = match(io_uring_prep_send_zc) ||
+                                         match(io_uring_prep_sendmsg_zc);
+            if constexpr (is_zerocopy) {
+                auto not_supported = std::make_exception_ptr(
+                                        std::system_error(EINVAL, std::system_category()));
+                stdexec::set_error(std::move(receiver), std::move(not_supported));
+                return;
             }
 
             if(cqe_res >= 0) [[likely]] {
