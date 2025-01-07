@@ -17,7 +17,7 @@ namespace internal {
 
 class io_uring_exec_local;
 
-// CRTP for `io_uring_exec_local::run()` and `io_uring_exec_local::final_run()`.
+// CRTP type for `io_uring_exec_local` and `io_uring_exec`.
 template <typename Exec_crtp_derived,
           typename io_uring_exec_operation_base>
 struct io_uring_exec_run {
@@ -124,12 +124,12 @@ struct io_uring_exec_run {
         auto progress_info_one_step = run_progress_info::template make<any_progress_possible>();
         auto &&[_, launched, submitted, done] = progress_info_one_step;
 
-        if(_runloop_must_have_stopped) [[unlikely]] {
-            return progress_info(0);
-        }
-
         auto &remote = that()->get_remote();
         auto &local = that()->get_local();
+
+        if(local._runloop_must_have_stopped) [[unlikely]] {
+            return progress_info(0);
+        }
 
         // We don't need this legacy way.
         // It was originally designed to work with a single std::stop_token type,
@@ -295,7 +295,7 @@ struct io_uring_exec_run {
                     // A weakly_parallel work. Won't check the request recursively.
                     inplace_terminal_run(local);
                     // This local runloop is not allowed to run again.
-                    _runloop_must_have_stopped = true;
+                    local._runloop_must_have_stopped = true;
                     return progress_info(step);
                 }
             }
@@ -354,9 +354,21 @@ protected:
         run<policy>();
     }
 
-private:
+protected:
+    // `std::false_type` has no viable overloaded '=' but initializable.
+    struct _invalid_bool: std::false_type { operator bool() = delete; };
+
+    // A restricted boolean type. Must be called by `local.<type_value>`.
+    // TODO: use EBO instead.
+    using _local_specified_bool =
+        std::conditional_t<
+            std::is_same_v<Exec_crtp_derived, io_uring_exec_local>,
+            bool, _invalid_bool>;
+
     // Avoid atomic stop_requested() operation.
-    bool _runloop_must_have_stopped {false};
+    _local_specified_bool _runloop_must_have_stopped {};
+
+private:
     size_t _walltime_step {std::hash<std::thread::id>{}(std::this_thread::get_id())};
 
     constexpr auto that() noexcept -> Exec_crtp_derived* {
