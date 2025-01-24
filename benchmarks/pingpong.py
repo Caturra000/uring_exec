@@ -20,13 +20,15 @@ blocksize = "16384"
 timeout = "10" # s
 port = "8848"
 
-# By default, it sends SIGTERM which may be ignored by test applications.
-signal.signal(signal.SIGINT, lambda sig, frame: (
-    print("Ctrl+C detected. Sending SIGINT to child processes..."),
-    os.killpg(server_handle.pid, signal.SIGINT) if server_handle else None,
-    os.killpg(client_handle.pid, signal.SIGINT) if client_handle else None,
+def signal_handler(sig, frame):
+    print("Ctrl+C detected. Sending SIGINT to child processes...")
+    for handle in [server_handle, client_handle]:
+        if handle:
+            try: os.killpg(handle.pid, signal.SIGINT)
+            except: pass
     sys.exit(0)
-))
+
+signal.signal(signal.SIGINT, signal_handler)
 
 print("Server:", args.server)
 print("Client:", args.client)
