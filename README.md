@@ -2,6 +2,14 @@
 
 [适配 io_uring 异步函数到 C++26 std::execution](https://www.bluepuni.com/archives/porting-liburing-to-stdexec/)
 
+> [!NOTE]
+> 
+> This project has been effectively archived since 2025.
+> 
+> It is only updated occasionally to keep up with `stdexec` upstream changes and avoid build breakage.
+> 
+> No active development is planned.
+
 ## Introduction
 
 This project attempts to provide [`stdexec`](https://github.com/NVIDIA/stdexec) support for [`liburing`](https://github.com/axboe/liburing). It is also a `std::execution`-based network library.
@@ -46,7 +54,7 @@ auto echo(io_uring_exec::scheduler scheduler, int client_fd) {
               | stdexec::let_value([=, &buf](int written_bytes) {
                     return stdexec::just(written_bytes == 0 || buf[0] == '@');
                 })
-              | exec::repeat_effect_until();
+              | exec::repeat_until();
         })
       | stdexec::let_value([=] {
             std::cout << "Closing client..." << std::endl;
@@ -64,7 +72,7 @@ auto server(io_uring_exec::scheduler scheduler, int server_fd, exec::async_scope
             scope.spawn(echo(scheduler, client_fd));
             return stdexec::just(false);
         })
-      | exec::repeat_effect_until();
+      | exec::repeat_until();
 }
 
 int main() {

@@ -5,7 +5,7 @@
 #include <ranges>
 #include <format>
 #include <exec/repeat_n.hpp>
-#include <exec/repeat_effect_until.hpp>
+#include <exec/repeat_until.hpp>
 #include "uring_exec.hpp"
 
 using uring_exec::io_uring_exec;
@@ -24,7 +24,7 @@ auto pong(io_uring_exec::scheduler scheduler, int client_fd, int blocksize) {
               | stdexec::let_value([=](int written_bytes) {
                     return stdexec::just(written_bytes == 0);
                 })
-              | exec::repeat_effect_until();
+              | exec::repeat_until();
         })
       | stdexec::upon_error(noop)
       | stdexec::let_value([=] {

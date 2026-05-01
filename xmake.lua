@@ -43,7 +43,16 @@ for _, file in ipairs(os.files("benchmarks/*.cpp")) do
         add_cxxflags("-DASIO_HAS_IO_URING -DASIO_DISABLE_EPOLL")
         add_cxxflags("-O3")
         add_packages("stdexec_latest", "liburing", "asio")
+    -- NOTES:
+    -- `ping_when_any` compiles very slowly due to a stdexec regression.
+    -- Caused by stdexec commit c287bf2c ("utilities for computing completions
+    -- during constant evaluation", 2026/04/20), which changed let_value's
+    -- completion signature computation from type-level metaprogramming to
+    -- constexpr value evaluation, causing ~10x compile time and ~inf memory.
+    -- Currently we need to *explicitly* declare this target.
+    if name ~= "ping_when_any" then
         table.insert(benchmarks_targets, name)
+    end
 end
 
 target("examples")

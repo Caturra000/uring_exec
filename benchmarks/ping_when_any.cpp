@@ -7,7 +7,7 @@
 #include <format>
 #include <cassert>
 #include <exec/when_any.hpp>
-#include <exec/repeat_effect_until.hpp>
+#include <exec/repeat_until.hpp>
 #include "uring_exec.hpp"
 
 using uring_exec::io_uring_exec;
@@ -79,7 +79,7 @@ auto client(io_uring_exec::scheduler scheduler,
                     client_written += written_bytes;
                     return stdexec::just(false);
                 })
-              | exec::repeat_effect_until()
+              | exec::repeat_until()
               | stdexec::let_value(collect)
               | stdexec::let_stopped(collect)
               | stdexec::let_error(collect);

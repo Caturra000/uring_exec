@@ -131,6 +131,8 @@ using intrusive_operation_map = trivial_intrusive_map<intrusive_operation_queue>
 // We might have several scheduler implementations, so make a simple template for them.
 template <typename Context>
 struct trivial_scheduler {
+    using scheduler_concept = stdexec::scheduler_t;
+
     template <stdexec::receiver Receiver>
     struct operation: io_uring_exec_task {
         using operation_state_concept = stdexec::operation_state_t;
@@ -179,8 +181,30 @@ struct trivial_scheduler {
         env get_env() const noexcept { return {context}; }
 
         template <stdexec::receiver Receiver>
-        operation<Receiver> connect(Receiver receiver) noexcept {
-            return {{operation<Receiver>::this_vtable}, std::move(receiver), context};
+        auto connect(Receiver receiver) noexcept {
+            // Workaround for stdexec commit: aab5da8b.
+            struct movable_op_state {
+                using op_t = operation<Receiver>;
+                union { op_t impl; };
+                bool _valid = true;
+
+                movable_op_state(Receiver rcvr, Context *ctx)
+                    : impl{{op_t::this_vtable}, std::move(rcvr), ctx} {}
+
+                movable_op_state(movable_op_state&& other) noexcept
+                    : impl{{op_t::this_vtable},
+                           std::move(other.impl.receiver),
+                           other.impl.context}
+                {
+                    other.impl.~operation();
+                    other._valid = false;
+                }
+
+                ~movable_op_state() { if(_valid) impl.~operation(); }
+
+                void start() noexcept { impl.start(); }
+            };
+            return movable_op_state{std::move(receiver), context};
         }
 
         Context *context;

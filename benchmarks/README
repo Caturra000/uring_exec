@@ -32,6 +32,8 @@ Note:
 * `ping_when_any` is also a client, but it uses `exec::when_any`. You can use it to compare polling performance.
   Although `uring_exec` supports per-I/O-operation cancellation, it may reduce performance.
   Use `xmake run benchmarks --client when_any` to benchmark.
+  NOTE: `ping_when_any` compiles very slowly due to a stdexec regression (c287bf2c, 2026/04/20).
+  It is excluded from `xmake build benchmarks`. Use `xmake build ping_when_any` to compile individually.
 
 Here is my benchmark report on:
 * {Linux v6.4.8}

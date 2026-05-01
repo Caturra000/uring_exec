@@ -7,7 +7,7 @@
 #include <format>
 #include <cassert>
 #include <exec/repeat_n.hpp>
-#include <exec/repeat_effect_until.hpp>
+#include <exec/repeat_until.hpp>
 #include "uring_exec.hpp"
 
 using uring_exec::io_uring_exec;
@@ -32,7 +32,7 @@ auto ping(io_uring_exec::scheduler scheduler,
                     r += read_bytes;
                     return stdexec::just(stop_token.stop_requested());
                 })
-              | exec::repeat_effect_until()
+              | exec::repeat_until()
               | stdexec::upon_error(noop)
               | stdexec::let_value([&] {
                     return stdexec::just(r, w);
